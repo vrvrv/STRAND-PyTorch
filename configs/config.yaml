@@ -1,0 +1,50 @@
+# @package _global_
+
+# specify here default training configuration
+defaults:
+  - trainer: default.yaml
+  - model: default.yaml
+  - datamodule: default.yaml
+  - experiment: null
+
+  - hydra: default.yaml
+
+  # enable color logging
+  - override hydra/hydra_logging: colorlog
+  - override hydra/job_logging: colorlog
+
+work_dir: ${hydra:runtime.cwd}
+
+# path to folder with data
+data_dir: ${work_dir}/data/
+data_name: alz
+
+callbacks:
+  model_checkpoint:
+    _target_: pytorch_lightning.callbacks.ModelCheckpoint
+    monitor: "negative_elbo"
+    save_top_k: 2
+    save_last: True
+    mode: "min"
+    dirpath: "checkpoints/"
+    filename: "sample-{epoch:02d}"
+  early_stopping:
+    _target_: pytorch_lightning.callbacks.EarlyStopping
+    monitor: "negative_elbo"
+    patience: 10000
+    mode: "min"
+
+
+logger:
+  _target_: pytorch_lightning.loggers.wandb.WandbLogger
+  project: "STRAND-Lightning"
+  save_dir: "."
+  id: null # pass correct id to resume experiment!
+  log_model: False
+  tags: ["rank:${model.rank}", "data:${data_name}", "use_covariate:${model.use_covariate}"]
+
+debug: False
+print_config: True
+ignore_warnings: True
+
+test_after_training: True

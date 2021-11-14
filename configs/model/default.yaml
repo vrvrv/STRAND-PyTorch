@@ -1,0 +1,30 @@
+_target_: src.strand.STRAND
+
+# Training
+data_dir:
+  X: ${work_dir}/data/${data_name}/feature.pkl
+  Y: ${work_dir}/data/${data_name}/snv.pkl
+
+rank: 5
+t_dim: 3
+r_dim: 3
+e_dim: 16
+n_dim: 4
+c_dim: 2
+
+use_covariate: True
+
+# Initialization
+init: NMF
+nmf_max_iter: 10000
+
+# E step
+e_iter: 10
+laplace_approx_conf:
+  lr: 0.1
+  max_iter: 1000
+  batch_size: 128
+
+# M step
+tf_lr: 0.1
+tf_max_iter: 0 #10
