@@ -1,3 +1,10 @@
 # @package _global_
 
 data_name: ts
+
+model:
+  e_iter: 5
+  tf_max_steps: 300
+
+trainer:
+  max_epochs: 10

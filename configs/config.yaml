@@ -17,21 +17,20 @@ work_dir: ${hydra:runtime.cwd}
 
 # path to folder with data
 data_dir: ${work_dir}/data/
-data_name: alz
 
 callbacks:
   model_checkpoint:
     _target_: pytorch_lightning.callbacks.ModelCheckpoint
-    monitor: "negative_elbo"
-    save_top_k: 2
-    save_last: True
+    monitor: "negative_elbo_epoch"
+    save_top_k: 1
+    save_last: False
     mode: "min"
     dirpath: "checkpoints/"
     filename: "sample-{epoch:02d}"
   early_stopping:
     _target_: pytorch_lightning.callbacks.EarlyStopping
-    monitor: "negative_elbo"
-    patience: 10000
+    monitor: "negative_elbo_epoch"
+    patience: 5
     mode: "min"
 
 
@@ -39,8 +38,8 @@ logger:
   _target_: pytorch_lightning.loggers.wandb.WandbLogger
   project: "STRAND-Lightning"
   save_dir: "."
-  id: null # pass correct id to resume experiment!
-  log_model: False
+  group: ${data_name}
+  name: ${data_name}_rank_${model.rank}
   tags: ["rank:${model.rank}", "data:${data_name}", "use_covariate:${model.use_covariate}"]
 
 debug: False

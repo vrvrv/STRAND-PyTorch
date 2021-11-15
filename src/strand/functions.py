@@ -37,11 +37,28 @@ def Phi(
     elif name == 'Lambda':
         lam = torch.log(lam + 1e-20).T
 
-    phi = torch.log(T + 1e-10)
-    phi = phi.unsqueeze(-3) + lam.unsqueeze(-2)
-    phi += torch.log(F + 1e-10).unsqueeze(-2)
+    phi = torch.log(T.clamp(1e-10)).cpu()
+    phi = phi.unsqueeze(-3) + lam.unsqueeze(-2).cpu()
+    phi += torch.log(F.clamp(1e-10)).unsqueeze(-2).cpu()
 
     return torch.softmax(phi, dim=-1)
+
+
+def Phi_d(
+        T: torch.Tensor,
+        F: torch.Tensor,
+        lambda_or_Lambda: tuple
+):
+    name, lam_d = lambda_or_Lambda
+
+    if name == 'lambda':
+        lam_d = torch.cat([lam_d, torch.tensor([0], device=lam_d.device)], dim=0)
+    elif name == 'Lambda':
+        lam_d = torch.log(lam_d.clamp_(min=1e-10)).T
+
+    phi_d = torch.log(T.clamp_(min=1e-10)) + torch.log(F.clamp_(min=1e-10)) + lam_d
+
+    return torch.softmax(phi_d, dim=-1)
 
 
 def Yphi(
@@ -50,12 +67,14 @@ def Yphi(
         F: torch.Tensor,
         lambda_or_Lambda: tuple
 ) -> torch.Tensor:
+    device = Y.device
+
     phi = Phi(T=T, F=F, lambda_or_Lambda=lambda_or_Lambda)
-    Y = Y.transpose(-1, -2)
+    Y = Y.transpose(-1, -2).cpu()
 
     yphi = Y.unsqueeze(-1) * phi
 
-    return yphi.sum(axis=(0, 1, 2, 3, 4, -2))
+    return yphi.sum(axis=(0, 1, 2, 3, 4, -2)).to(device)
 
 
 def stack(_T0: torch.Tensor, _t: torch.Tensor, _r: torch.Tensor, e_dim: int, n_dim: int, c_dim: int, rank: int):
@@ -105,7 +124,8 @@ def factors_to_F(
         n_dim: int,
         c_dim: int,
         rank: int,
-        missing_rate: torch.Tensor
+        missing_rate: torch.Tensor,
+        index=None
 ) -> torch.Tensor:
     t = logit_to_distribution(_t)
     r = logit_to_distribution(_r)
@@ -113,7 +133,13 @@ def factors_to_F(
     n = logit_to_distribution(_n)
     c = logit_to_distribution(_c)
 
-    F = torch.ones((3, 3, e_dim, n_dim, c_dim, missing_rate.size(-1), rank), device=_t.device)
+    sample_size = missing_rate.size(-1)
+
+    if index is None:
+        index = torch.arange(0, sample_size)
+        F = torch.ones((3, 3, e_dim, n_dim, c_dim, sample_size, rank), device=_t.device)
+    else:
+        F = torch.ones((3, 3, e_dim, n_dim, c_dim, len(index), rank), device=_t.device)
 
     for l in range(e_dim):
         F[:, :, l] *= e[l]
@@ -125,14 +151,14 @@ def factors_to_F(
     if missing_rate is not None:
         for i in range(2):
             for j in range(2):
-                F[i, j] *= t[i] * r[j] * missing_rate[0, 0][:, None]
+                F[i, j] *= t[i] * r[j] * missing_rate[0, 0][index, None]
 
-            F[i, 2] *= t[i] * missing_rate[0, 1][:, None]
+            F[i, 2] *= t[i] * missing_rate[0, 1][index, None]
 
         for j in range(2):
-            F[2, j] *= r[j] * missing_rate[1, 0][:, None]
+            F[2, j] *= r[j] * missing_rate[1, 0][index, None]
 
-        F[2, 2] *= missing_rate[1, 1][:, None]
+        F[2, 2] *= missing_rate[1, 1][index, None]
 
     else:
         for i in range(3):

@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 import pytorch_lightning as pl
+from torch.utils.data import Dataset, DataLoader
 
 from .functions import *
 from .laplace_approximation import LaplaceApproximation
@@ -16,6 +17,19 @@ from tqdm import tqdm
 from typing import Tuple
 
 logger = logging.getLogger('src.train')
+
+
+def collate_fn(batch):
+    phi = []
+    idx = []
+    for phi_i, i in batch:
+        phi.append(phi_i)
+        idx.append(i)
+
+    phi = torch.stack(phi, dim=-3)
+    idx = torch.tensor(idx, dtype=torch.long)
+
+    return phi, idx
 
 
 def deviance(pred, true):
@@ -59,7 +73,8 @@ class STRAND(pl.LightningModule):
                  nmf_max_iter: int = 10000,
                  e_iter: int = 20,
                  tf_lr: float = 0.1,
-                 tf_max_iter: int = 200,
+                 tf_batch_size: int = 32,
+                 tf_max_steps: int = 200,
                  **kwargs
                  ):
         super().__init__()
@@ -157,23 +172,40 @@ class STRAND(pl.LightningModule):
 
         for i, factor in enumerate(['t', 'r', 'e', 'n', 'c']):
             logger.info(f"Intializing factor, {factor}")
-            dim = getattr(self.hparams, f"{factor}_dim")
-            f = np.empty((dim, self.hparams.rank))
 
-            for l in range(dim):
-                Y_l = self.Y.index_select(i, torch.tensor([l])) \
-                    .sum(axis=(0, 1, 2, 3, 4)).double()
+            Y_f = self.Y.transpose(i, -2).sum(dim=(0, 1, 2, 3, 4))
 
-                f_l, _, __ = non_negative_factorization(
-                    n_components=self.hparams.rank,
-                    X=Y_l,
-                    W=None,
-                    H=E,
-                    update_H=False,
-                    init='nndsvd'
-                )
+            if factor in {'t', 'r'}:
+                Y_f[0] = Y_f[0] / (self.missing_rate[0, 0] + self.missing_rate[0, 1])
+                Y_f[1] = Y_f[1] / (self.missing_rate[0, 0] + self.missing_rate[1, 0])
 
-                f[l] = f_l.sum(axis=0)
+                Y_f = Y_f[:2]
+
+            f, _, __ = non_negative_factorization(
+                n_components=self.hparams.rank,
+                X=Y_f,
+                W=None,
+                H=E,
+                update_H=False,
+                init='nndsvd'
+            )
+
+            # dim = getattr(self.hparams, f"{factor}_dim")
+            # f = np.empty((dim, self.hparams.rank))
+            # for l in range(dim):
+            #     Y_l = self.Y.index_select(i, torch.tensor([l])) \
+            #         .sum(axis=(0, 1, 2, 3, 4)).double()
+            #
+            #     f_l, _, __ = non_negative_factorization(
+            #         n_components=self.hparams.rank,
+            #         X=Y_l,
+            #         W=None,
+            #         H=E,
+            #         update_H=False,
+            #         init='nndsvd'
+            #     )
+            #
+            #     f[l] = f_l.sum(axis=0)
 
             self.register_buffer(
                 f'_{factor}', logit(torch.from_numpy(f / f.sum(axis=0)))
@@ -370,10 +402,32 @@ class STRAND(pl.LightningModule):
             self.tnf._n = nn.Parameter(self._n)
             self.tnf._c = nn.Parameter(self._c)
 
+        # self.tnf.fit(
+        #     phi=self.phi,
+        #     lr=self.hparams.tf_lr,
+        #     max_iter=self.hparams.tf_max_iter
+        # )
+
+        class yphi_iterator(Dataset):
+            def __init__(self_phi):
+                super(yphi_iterator, self_phi).__init__()
+
+            def __len__(self_phi):
+                return self.hparams.D
+
+            def __getitem__(self_phi, item):
+                return self.Y[..., [item]] * self.phi_d(item), item
+
+        yphi = DataLoader(
+            yphi_iterator(),
+            batch_size=self.hparams.tf_batch_size,
+            collate_fn=collate_fn
+        )
+
         self.tnf.fit(
-            phi=self.phi,
+            yphi_loader=yphi,
             lr=self.hparams.tf_lr,
-            max_iter=self.hparams.tf_max_iter
+            max_steps=self.hparams.tf_max_steps
         )
 
         self._T0 = 0.99 * self.tnf._T0 + 0.01 * self._T0
@@ -439,6 +493,29 @@ class STRAND(pl.LightningModule):
 
         return phi
 
+    def F_d(self, d):
+        return factors_to_F(
+            _t=self._t,
+            _r=self._r,
+            _e=self._e,
+            _n=self._n,
+            _c=self._c,
+            e_dim=self.hparams.e_dim,
+            n_dim=self.hparams.n_dim,
+            c_dim=self.hparams.c_dim,
+            missing_rate=self.missing_rate,
+            rank=self.hparams.rank,
+            index=[d]
+        )
+
+    def phi_d(self, d):
+        if self.hparams.use_covariate:
+            phi_d = Phi_d(
+                T=self.T, F=self.F_d(d), lambda_or_Lambda=('lambda', self.lamb[:, d])
+            )
+
+        return phi_d
+
     @property
     def Yphi(self):
         if self.hparams.use_covariate:
@@ -453,25 +530,26 @@ class STRAND(pl.LightningModule):
         return yphi
 
     @property
+    def tf(self):
+        _tf = 0
+        for d in range(self.hparams.D):
+            _tf += (self.T * self.F[..., [d], :]) / self.hparams.D
+        return _tf.unsqueeze(-3)
+
+    @property
+    def theta(self):
+        return logit_to_distribution(self.lamb).float()
+
+    @property
     def Chat(self):
         if self.hparams.use_covariate:
-            # theta = logit_to_distribution(self.lamb).T
-            # tf = self.T.unsqueeze(-3) * self.F.unsqueeze(-2)
-            # Chat = (tf.transpose(-2, -3) * theta).sum(-1) * self.Y.sum(dim=(0, 1, 2, 3, 4, 5))
-            # bias_correction = (tf.mean(dim=-3, keepdim=True) * self.phi.mean(dim=-3, keepdim=True)).sum(-1)
+            # Chat = (self.tf.squeeze(-3).transpose(-2, -3) * self.theta).sum(-1) * self.Y.sum(dim=(0, 1, 2, 3, 4, 5))
+            # bias_correction = (self.tf * self.phi.mean(dim=-3, keepdim=True)).sum(-1)
 
-            tf = (self.T.unsqueeze(-3) * self.F.unsqueeze(-2)).mean(dim=-3, keepdim=True)
-            theta = logit_to_distribution(self.lamb).float()
-
-            p_lv_d = tf.matmul(theta)
-
-            Chat = (p_lv_d * self.Y.sum((0, 1, 2, 3, 4, 5))).squeeze()
-
-            bias_correction = (tf * self.phi.mean(dim=-3, keepdim=True)).sum(-1)
+            Chat = (self.tf.matmul(self.theta) * self.Y.sum(dim=(0, 1, 2, 3, 4, 5))).squeeze()
+            bias_correction = (self.tf.cpu() * self.phi.mean(dim=-3, keepdim=True)).sum(-1).to(self.device)
 
             return Chat * bias_correction.transpose(-1, -2)
-
-
 
     @property
     def missing_rate(self) -> torch.Tensor:
@@ -500,9 +578,8 @@ class STRAND(pl.LightningModule):
         TF = self.T.unsqueeze(-3) * self.F.unsqueeze(-2)
 
         Y = self.Y.transpose(-1, -2).unsqueeze(-1)
-        phi = self.phi
 
-        neg_elbo = -(Y * phi * torch.log(TF + 1e-20)).sum()
+        neg_elbo = -(Y.cpu() * self.phi * torch.log(TF.cpu() + 1e-20)).sum().to(self.device)
 
         if self.hparams.use_covariate:
 
@@ -524,16 +601,16 @@ class STRAND(pl.LightningModule):
 
             neg_elbo += 0.5 * EqGamma
 
-            log_det = torch.log(torch.det(self.Sigma_mat) + 1e-20) \
-                      - torch.log(torch.det(self.Delta) + 1e-20)
+            log_det = torch.log(torch.det(self.Sigma_mat).clamp(1e-20)) \
+                      - torch.log(torch.det(self.Delta).clamp(1e-20))
 
             neg_elbo += 0.5 * log_det.sum()
 
             DivGamma = torch.diagonal(self.zeta, dim1=1, dim2=2).sum(dim=1)
             DivGamma /= self.sigma ** 2 + 1e-20
-            DivGamma += (self.Xi ** 2).sum(axis=-1) / (self.sigma ** 2 + 1e-20)
-            DivGamma += 2 * self.hparams.p * torch.log(self.sigma + 1e-20)
-            DivGamma -= torch.log(torch.det(self.zeta) + 1e-20)
+            DivGamma += (self.Xi ** 2).sum(axis=-1) / (self.sigma ** 2).clamp(1e-20)
+            DivGamma += 2 * self.hparams.p * torch.log(self.sigma.clamp(1e-20))
+            DivGamma -= torch.log(torch.det(self.zeta).clamp(1e-20))
 
             neg_elbo += 0.5 * DivGamma.sum()
 

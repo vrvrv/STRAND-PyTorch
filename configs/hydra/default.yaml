@@ -1,6 +1,6 @@
 # output paths for hydra logs
 run:
-  dir: logs/runs/rank_${model.rank}/${now:%Y-%m-%d_%H-%M-%S}
+  dir: logs/runs/${data_name}_rank_${model.rank}/${now:%Y-%m-%d_%H-%M-%S}
 sweep:
   dir: logs/multiruns/${now:%Y-%m-%d_%H-%M-%S}
   subdir: ${hydra.job.num}
