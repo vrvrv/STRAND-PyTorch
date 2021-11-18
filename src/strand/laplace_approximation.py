@@ -16,7 +16,9 @@ def getDelta_d(lamb_d, Yn_d, SigmaInv):
                   - Yn_d * theta.matmul(theta.T) \
                   + Yn_d * torch.diag(theta.squeeze(-1))
 
-    return torch.inverse(neg_hessian)
+    Delta_d = torch.inverse(neg_hessian)
+
+    return 0.01 * torch.diagonal(Delta_d.clamp(0.01)) + 0.99 * Delta_d
 
 
 def getDelta(lamb, Yphi, Sigma_inv):
@@ -74,7 +76,8 @@ class LaplaceApproximation(nn.Module):
             range(self.max_iter),
             desc='[E] Laplace Approximation',
             total=self.max_iter,
-            leave=False
+            leave=False,
+            miniters=10
         )
 
         for _ in pbar:
@@ -94,7 +97,8 @@ class LaplaceApproximation(nn.Module):
 
                 avg_loss += loss.item() / (end_idx - start_idx + 1)
 
-            pbar.set_postfix({'avg_loss': avg_loss})
+            if _ % 10 == 0:
+                pbar.set_postfix({'avg_loss': avg_loss})
 
         lamb = eta.detach()
         Delta = getDelta(lamb, Yphi, Sigma_inv).to(lamb.device)

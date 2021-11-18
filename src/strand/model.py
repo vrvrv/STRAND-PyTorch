@@ -37,27 +37,6 @@ def deviance(pred, true):
     return d_ij.mean()
 
 
-def update_zeta(
-        Sigma_mat: torch.Tensor,
-        sigma: torch.Tensor,
-        rank: int,
-        X: torch.Tensor
-) -> torch.Tensor:
-    p = X.size(0)
-    zeta = torch.empty((rank - 1, p, p))
-
-    SigmaInv = torch.inverse(Sigma_mat)
-
-    for k in range(rank - 1):
-        zeta_k = torch.inverse(
-            1 / (sigma[k] ** 2) * torch.eye(p) + SigmaInv[k, k] * X.matmul(X.T)
-        )
-
-        zeta[k] = zeta_k
-
-    return zeta
-
-
 class STRAND(pl.LightningModule):
     def __init__(self,
                  data_dir: dict,
@@ -75,6 +54,8 @@ class STRAND(pl.LightningModule):
                  tf_lr: float = 0.1,
                  tf_batch_size: int = 32,
                  tf_max_steps: int = 200,
+                 bias_correction: bool = True,
+                 uniform_missing_rate: bool = False,
                  **kwargs
                  ):
         super().__init__()
@@ -83,14 +64,14 @@ class STRAND(pl.LightningModule):
         if self.hparams.use_covariate:
             with open(data_dir['X'], "rb") as f:
                 self.register_buffer(
-                    'X', torch.from_numpy(pickle.load(f)).float()
+                    'X', torch.from_numpy(pickle.load(f)).float(), persistent=False
                 )
 
                 self.hparams['p'] = self.X.shape[0]
 
         with open(data_dir['Y'], "rb") as f:
             self.register_buffer(
-                'Y', torch.from_numpy(pickle.load(f)).float()
+                'Y', torch.from_numpy(pickle.load(f)).float(), persistent=False
             )
             self.hparams['V'], self.hparams['D'] = self.Y.size(-2), self.Y.size(-1)
 
@@ -189,23 +170,6 @@ class STRAND(pl.LightningModule):
                 update_H=False,
                 init='nndsvd'
             )
-
-            # dim = getattr(self.hparams, f"{factor}_dim")
-            # f = np.empty((dim, self.hparams.rank))
-            # for l in range(dim):
-            #     Y_l = self.Y.index_select(i, torch.tensor([l])) \
-            #         .sum(axis=(0, 1, 2, 3, 4)).double()
-            #
-            #     f_l, _, __ = non_negative_factorization(
-            #         n_components=self.hparams.rank,
-            #         X=Y_l,
-            #         W=None,
-            #         H=E,
-            #         update_H=False,
-            #         init='nndsvd'
-            #     )
-            #
-            #     f[l] = f_l.sum(axis=0)
 
             self.register_buffer(
                 f'_{factor}', logit(torch.from_numpy(f / f.sum(axis=0)))
@@ -388,11 +352,13 @@ class STRAND(pl.LightningModule):
 
             Sigma_mat += tmp
 
-            self.Sigma_mat = 0.01 * torch.diagonal(Sigma_mat) + 0.99 * Sigma_mat
+            self.Sigma_mat = 0.001 * torch.diagonal(Sigma_mat) + 0.999 * Sigma_mat
 
             # Update sigma
             for k in range(self.hparams.rank - 1):
-                self.sigma[k] = torch.sqrt((torch.trace(self.zeta[k]) + (self.Xi[k] ** 2).sum()) / self.hparams.p)
+                sigma_k = torch.sqrt((torch.trace(self.zeta[k]) + (self.Xi[k] ** 2).sum()) / self.hparams.p)
+                self.sigma[k] = sigma_k.clamp_(0.01)
+
 
         with torch.no_grad():
             self.tnf._T0 = nn.Parameter(self._T0)
@@ -401,12 +367,6 @@ class STRAND(pl.LightningModule):
             self.tnf._e = nn.Parameter(self._e)
             self.tnf._n = nn.Parameter(self._n)
             self.tnf._c = nn.Parameter(self._c)
-
-        # self.tnf.fit(
-        #     phi=self.phi,
-        #     lr=self.hparams.tf_lr,
-        #     max_iter=self.hparams.tf_max_iter
-        # )
 
         class yphi_iterator(Dataset):
             def __init__(self_phi):
@@ -443,7 +403,40 @@ class STRAND(pl.LightningModule):
 
     def test_step(self, *args, **kwargs):
         dev = deviance(self.Chat, self.Y)
-        self.log("deviance", dev, logger=True)
+
+        Y = self.Y.reshape(-1, 96)
+        non_zero_idx = Y.sum(dim=-1) != 0
+        Y = Y[non_zero_idx]
+
+        Chat_flatten = self.Chat.reshape(-1, 96)
+        Chat_flatten_bc = (self.Chat * self.bias_corrector).reshape(-1, 96)
+
+        p = Y / Y.sum(dim=-1, keepdim=True)
+        phat = Chat_flatten[non_zero_idx] / Chat_flatten[non_zero_idx].sum(dim=-1, keepdim=True)
+        phat_bc = Chat_flatten_bc[non_zero_idx] / Chat_flatten_bc[non_zero_idx].sum(dim=-1, keepdim=True)
+
+        p_error_1 = torch.abs(p-phat).sum(dim=-1)
+        p_error_2 = torch.sqrt(torch.square(p-phat).sum(dim=-1))
+
+        p_error_1_bc = torch.abs(p-phat_bc).sum(dim=-1)
+        p_error_2_bc = torch.sqrt(torch.square(p-phat_bc).sum(dim=-1))
+
+        self.log_dict(
+            {
+                "deviance": dev,
+                "p_error_1_avg": p_error_1.mean(),
+                "p_error_1_std": p_error_1.std(),
+                "p_error_2_avg": p_error_2.mean(),
+                "p_error_2_std": p_error_2.std(),
+                "cross_entropy": - (p * torch.log(phat)).mean(),
+                "p_error_1_avg_bc": p_error_1_bc.mean(),
+                "p_error_1_std_bc": p_error_1_bc.std(),
+                "p_error_2_avg_bc": p_error_2_bc.mean(),
+                "p_error_2_std_bc": p_error_2_bc.std(),
+                "cross_entropy_bc": - (p * torch.log(phat_bc)).mean()
+            },
+            logger=True
+        )
 
     @property
     def Sigma_inv(self):
@@ -477,7 +470,9 @@ class STRAND(pl.LightningModule):
             n_dim=self.hparams.n_dim,
             c_dim=self.hparams.c_dim,
             missing_rate=self.missing_rate,
-            rank=self.hparams.rank
+            rank=self.hparams.rank,
+            device='cpu',
+            uniform_missing_rate=self.hparams.uniform_missing_rate
         )
 
     @property
@@ -531,10 +526,13 @@ class STRAND(pl.LightningModule):
 
     @property
     def tf(self):
-        _tf = 0
-        for d in range(self.hparams.D):
-            _tf += (self.T * self.F[..., [d], :]) / self.hparams.D
-        return _tf.unsqueeze(-3)
+        if self.hparams.uniform_missing_rate:
+            _tf = self.T.cpu() * self.F
+        else:
+            _tf = 0
+            for d in range(self.hparams.D):
+                _tf += (self.T.cpu() * self.F[..., [d], :]) / self.hparams.D
+        return _tf.unsqueeze(-3).to(self.device)
 
     @property
     def theta(self):
@@ -545,11 +543,16 @@ class STRAND(pl.LightningModule):
         if self.hparams.use_covariate:
             # Chat = (self.tf.squeeze(-3).transpose(-2, -3) * self.theta).sum(-1) * self.Y.sum(dim=(0, 1, 2, 3, 4, 5))
             # bias_correction = (self.tf * self.phi.mean(dim=-3, keepdim=True)).sum(-1)
-
             Chat = (self.tf.matmul(self.theta) * self.Y.sum(dim=(0, 1, 2, 3, 4, 5))).squeeze()
-            bias_correction = (self.tf.cpu() * self.phi.mean(dim=-3, keepdim=True)).sum(-1).to(self.device)
+            #
+            # if self.hparams.bias_correction:
+            #     Chat *= self.bias_corrector
 
-            return Chat * bias_correction.transpose(-1, -2)
+            return Chat
+
+    @property
+    def bias_corrector(self):
+        return (self.tf.cpu() * self.phi.mean(dim=-3, keepdim=True)).sum(-1).transpose(-1, -2).to(self.device)
 
     @property
     def missing_rate(self) -> torch.Tensor:
@@ -557,11 +560,11 @@ class STRAND(pl.LightningModule):
         Return : _m (2*2 tensor)
         _m[:,:] : missing rate of t and r
         """
-        y_tr = self.Y.sum(axis=(2, 3, 4, -2))
+        y_tr = self.Y.sum(dim=(2, 3, 4, -2))
 
-        __m00 = y_tr[:2, :2].sum(axis=(0, 1)).float() / y_tr.sum(dim=(0, 1))
-        __m01 = y_tr[:2, 2].sum(axis=(0)).float() / y_tr.sum(dim=(0, 1))
-        __m10 = y_tr[2, :2].sum(axis=(0)).float() / y_tr.sum(dim=(0, 1))
+        __m00 = y_tr[:2, :2].sum(dim=(0, 1)).float() / y_tr.sum(dim=(0, 1))
+        __m01 = y_tr[:2, 2].sum(dim=0).float() / y_tr.sum(dim=(0, 1))
+        __m10 = y_tr[2, :2].sum(dim=0).float() / y_tr.sum(dim=(0, 1))
         __m11 = y_tr[2, 2].float() / y_tr.sum(dim=(0, 1))
 
         missing_rate = torch.stack([__m00, __m01, __m10, __m11]).reshape(2, 2, -1)
@@ -574,12 +577,13 @@ class STRAND(pl.LightningModule):
 
     @property
     def negative_elbo(self):
-
-        TF = self.T.unsqueeze(-3) * self.F.unsqueeze(-2)
+        TF = self.T.unsqueeze(-3).cpu() * self.F.unsqueeze(-2)
 
         Y = self.Y.transpose(-1, -2).unsqueeze(-1)
 
-        neg_elbo = -(Y.cpu() * self.phi * torch.log(TF.cpu() + 1e-20)).sum().to(self.device)
+        neg_elbo = -(Y.cpu() * self.phi * torch.log(TF.clamp(1e-20))).sum().to(self.device)
+
+        print("-------------")
 
         if self.hparams.use_covariate:
 
@@ -601,8 +605,8 @@ class STRAND(pl.LightningModule):
 
             neg_elbo += 0.5 * EqGamma
 
-            log_det = torch.log(torch.det(self.Sigma_mat).clamp(1e-20)) \
-                      - torch.log(torch.det(self.Delta).clamp(1e-20))
+            log_det = torch.logdet(self.Sigma_mat + 0.01 * torch.eye(self.hparams.rank-1, device=self.device)) \
+                      - torch.logdet(self.Delta + + 0.01 * torch.eye(self.hparams.rank-1, device=self.device))
 
             neg_elbo += 0.5 * log_det.sum()
 
@@ -616,7 +620,6 @@ class STRAND(pl.LightningModule):
 
 
         else:
-
             DivTheta = self.D * torch.lgamma(self.H + 1e-20).sum()
 
             DivTheta -= torch.lgamma(self.Lambda + 1e-20).sum()
@@ -625,6 +628,7 @@ class STRAND(pl.LightningModule):
                          * (torch.digamma(self.Lambda + 1e-20) - 1)).sum()
 
             neg_elbo += DivTheta
+        print("-------------")
 
         return neg_elbo.item() / self.hparams.D
 

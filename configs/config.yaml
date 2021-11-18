@@ -27,6 +27,7 @@ callbacks:
     mode: "min"
     dirpath: "checkpoints/"
     filename: "sample-{epoch:02d}"
+    save_weights_only: True
   early_stopping:
     _target_: pytorch_lightning.callbacks.EarlyStopping
     monitor: "negative_elbo_epoch"
@@ -40,7 +41,13 @@ logger:
   save_dir: "."
   group: ${data_name}
   name: ${data_name}_rank_${model.rank}
-  tags: ["rank:${model.rank}", "data:${data_name}", "use_covariate:${model.use_covariate}"]
+  tags: [
+      "rank:${model.rank}",
+      "data:${data_name}",
+      "use_covariate:${model.use_covariate}",
+      "bias_correction:${model.bias_correction}",
+      "uniform_missing_rate:${model.uniform_missing_rate}"
+  ]
 
 debug: False
 print_config: True

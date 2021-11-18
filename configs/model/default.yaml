@@ -16,16 +16,19 @@ use_covariate: True
 
 # Initialization
 init: NMF
-nmf_max_iter: 10000
+nmf_max_iter: 100000
 
 # E step
 e_iter: 10
 laplace_approx_conf:
-  lr: 0.1
+  lr: 0.01
   max_iter: 1000
-  batch_size: 256
+  batch_size: 512
 
 # M step
 tf_lr: 0.1
 tf_batch_size: 64
-tf_max_steps: 300
+tf_max_steps: 500
+
+bias_correction: False
+uniform_missing_rate: True

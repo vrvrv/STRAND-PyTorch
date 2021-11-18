@@ -26,7 +26,7 @@ class TF_opt_model(nn.Module):
         self.rank = _t.size(dim=-1)
 
         self.register_buffer(
-            'Y', Y.transpose(-1, -2).unsqueeze(-1)
+            'Y', Y.transpose(-1, -2).unsqueeze(-1), persistent=False
         )
 
         # Declare parameters

@@ -125,30 +125,38 @@ def factors_to_F(
         c_dim: int,
         rank: int,
         missing_rate: torch.Tensor,
-        index=None
+        index=None,
+        device=None,
+        uniform_missing_rate=False
 ) -> torch.Tensor:
+
+    if device == 'cpu':
+        _t = _t.cpu()
+        _r = _r.cpu()
+        _e = _e.cpu()
+        _n = _n.cpu()
+        _c = _c.cpu()
+
+        missing_rate = missing_rate.cpu()
+
+        if isinstance(index, torch.Tensor):
+            index = index.cpu()
+
     t = logit_to_distribution(_t)
     r = logit_to_distribution(_r)
     e = logit_to_distribution(_e)
     n = logit_to_distribution(_n)
     c = logit_to_distribution(_c)
 
-    sample_size = missing_rate.size(-1)
+    if not uniform_missing_rate:
+        sample_size = missing_rate.size(-1)
 
-    if index is None:
-        index = torch.arange(0, sample_size)
-        F = torch.ones((3, 3, e_dim, n_dim, c_dim, sample_size, rank), device=_t.device)
-    else:
-        F = torch.ones((3, 3, e_dim, n_dim, c_dim, len(index), rank), device=_t.device)
+        if index is None:
+            index = torch.arange(0, sample_size)
+            F = torch.ones((3, 3, e_dim, n_dim, c_dim, sample_size, rank), device=_t.device)
+        else:
+            F = torch.ones((3, 3, e_dim, n_dim, c_dim, len(index), rank), device=_t.device)
 
-    for l in range(e_dim):
-        F[:, :, l] *= e[l]
-    for l in range(n_dim):
-        F[:, :, :, l] *= n[l]
-    for l in range(c_dim):
-        F[:, :, :, :, l] *= c[l]
-
-    if missing_rate is not None:
         for i in range(2):
             for j in range(2):
                 F[i, j] *= t[i] * r[j] * missing_rate[0, 0][index, None]
@@ -161,9 +169,25 @@ def factors_to_F(
         F[2, 2] *= missing_rate[1, 1][index, None]
 
     else:
-        for i in range(3):
-            F[i] *= t[i]
-        for i in range(3):
-            F[:, i] *= r[i]
+        missing_rate = missing_rate.mean(-1)
+        F = torch.ones((3, 3, e_dim, n_dim, c_dim, 1, rank), device=_t.device)
+
+        for i in range(2):
+            for j in range(2):
+                F[i, j] *= t[i] * r[j] * missing_rate[0, 0]
+
+            F[i, 2] *= t[i] * missing_rate[0, 1]
+
+        for j in range(2):
+            F[2, j] *= r[j] * missing_rate[1, 0]
+
+        F[2, 2] *= missing_rate[1, 1]
+
+    for l in range(e_dim):
+        F[:, :, l] *= e[l]
+    for l in range(n_dim):
+        F[:, :, :, l] *= n[l]
+    for l in range(c_dim):
+        F[:, :, :, :, l] *= c[l]
 
     return F
