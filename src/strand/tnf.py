@@ -26,7 +26,7 @@ class TF_opt_model(nn.Module):
         self.rank = _t.size(dim=-1)
 
         self.register_buffer(
-            'Y', Y.transpose(-1, -2).unsqueeze(-1), persistent=False
+            'Y', Y, persistent=False
         )
 
         # Declare parameters
@@ -44,7 +44,7 @@ class TF_opt_model(nn.Module):
 
         self.device = _t.device
 
-    def forward(self, yphi, index):
+    def forward(self, yphi, idx):
 
         T = stack(
             _T0=self._T0,
@@ -65,13 +65,12 @@ class TF_opt_model(nn.Module):
             e_dim=self.e_dim,
             n_dim=self.n_dim,
             c_dim=self.c_dim,
-            missing_rate=self.missing_rate,
+            missing_rate=self._missing_rate,
             rank=self.rank,
-            index=index
+            reduction=True
         )
 
-        TF = T.unsqueeze(-3) * F.unsqueeze(-2)
-        return -(yphi * torch.log(TF + 1e-20)).mean(dim=(-1, -2)).sum()
+        return -(yphi * torch.log((T * F).clamp_(1e-20)).unsqueeze(-3)).mean(-1).sum()
 
     def fit(
             self,
@@ -79,19 +78,20 @@ class TF_opt_model(nn.Module):
             lr: float,
             max_steps: int
     ):
+        self.optim = optim.Adam(self.parameters(), lr=lr)
 
-        if not hasattr(self, 'optim'):
-            self.optim = optim.AdamW(self.parameters(), lr=lr)
-        else:
-            self.optim.param_groups[0]['params'] = [p for p in self.parameters()]
+        # if not hasattr(self, 'optim'):
+        #     self.optim = optim.Adam(self.parameters(), lr=lr)
+        # else:
+        #     self.optim.param_groups[0]['params'] = [p for p in self.parameters()]
 
         with tqdm(total=max_steps, desc='[M] T & F optimization', leave=False) as pbar:
             cur_step = 0
             for _ in range(math.ceil(max_steps/len(yphi_loader))):
                 avg_loss = 0
-                for i, (yphi_batch, idx_batch) in enumerate(yphi_loader):
+                for i, (yphi_batch, idx) in enumerate(yphi_loader):
                     self.optim.zero_grad()
-                    loss = self(yphi=yphi_batch, index=idx_batch)
+                    loss = self(yphi=yphi_batch, idx=idx)
                     loss.backward()
 
                     self.optim.step()
@@ -99,7 +99,7 @@ class TF_opt_model(nn.Module):
                     if cur_step >= max_steps:
                         break
 
-                    avg_loss += loss.item() / len(idx_batch)
+                    avg_loss += loss.item()
                     pbar.update(1)
 
                     cur_step += 1
@@ -112,19 +112,39 @@ class TF_opt_model(nn.Module):
         self._e.detach_()
         self._n.detach_()
         self._c.detach_()
-
     @property
-    def missing_rate(self):
-        y_tr = self.Y.sum(axis=(2, 3, 4, -2))
+    def _missing_rate(self) -> torch.Tensor:
+        """
+        Return : _m (2*2 tensor)
+        _m[:,:] : missing rate of t and r
+        """
+        y_tr = self.Y.sum(dim=(2, 3, 4, -2, -1))
 
-        __m00 = y_tr[:2, :2].sum(axis=(0, 1)).float() / y_tr.sum(dim=(0, 1))
-        __m01 = y_tr[:2, 2].sum(axis=(0)).float() / y_tr.sum(dim=(0, 1))
-        __m10 = y_tr[2, :2].sum(axis=(0)).float() / y_tr.sum(dim=(0, 1))
-        __m11 = y_tr[2, 2].float() / y_tr.sum(dim=(0, 1))
+        _m00 = y_tr[:2, :2].sum(dim=(0, 1)).float() / y_tr.sum(dim=(0, 1))
+        _m01 = y_tr[:2, 2].sum(dim=0).float() / y_tr.sum(dim=(0, 1))
+        _m10 = y_tr[2, :2].sum(dim=0).float() / y_tr.sum(dim=(0, 1))
+        _m11 = y_tr[2, 2].float() / y_tr.sum(dim=(0, 1))
 
-        missing_rate = torch.stack([__m00, __m01, __m10, __m11]).reshape(2, 2, -1)
+        m = torch.stack([_m00, _m01, _m10, _m11])
 
-        return missing_rate
+        return m.reshape(2, 2)
+
+    def missing_rate(self, idx) -> torch.Tensor:
+        """
+        Return : _m (2*2 tensor)
+        _m[:,:] : missing rate of t and r
+        """
+        y_tr = self.Y.sum(dim=(2, 3, 4, -2))[..., idx]
+
+        _m00 = y_tr[:2, :2].sum(dim=(0, 1)).float() / y_tr.sum(dim=(0, 1))
+        _m01 = y_tr[:2, 2].sum(dim=0).float() / y_tr.sum(dim=(0, 1))
+        _m10 = y_tr[2, :2].sum(dim=0).float() / y_tr.sum(dim=(0, 1))
+        _m11 = y_tr[2, 2].float() / y_tr.sum(dim=(0, 1))
+
+        m = torch.stack([_m00, _m01, _m10, _m11])
+
+        return m.reshape(2, 2, -1)
+
 #
 # class TF_opt_model(nn.Module):
 #

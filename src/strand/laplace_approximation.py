@@ -4,6 +4,7 @@ import torch.nn as nn
 import torch.optim as optim
 
 import numpy as np
+import time
 from tqdm import tqdm
 
 
@@ -44,16 +45,18 @@ class LaplaceApproximation(nn.Module):
         self.max_iter = max_iter
         self.batch_size = batch_size
 
-    def forward(self, eta, mu, Yphi, Sigma_inv):
+    def forward(self, eta, mu, Yphi):
 
-        loss = 0.5 * torch.diag((eta - mu).T.matmul(Sigma_inv).matmul(eta - mu))
+        loss1 = 0.5 * torch.diag((eta - mu).T.matmul(self.scaled_Sigma_inv).matmul(eta - mu))
 
-        loss = loss - (Yphi * torch.log(
+        loss2 = - (Yphi * torch.log(
             torch.softmax(
                 torch.cat([eta, torch.zeros(1, eta.size(1), device=eta.device)], dim=0),
                 dim=0
             ).T + 1e-10
         )).sum(-1)
+
+        loss = loss1 + loss2
 
         return loss.mean()
 
@@ -63,13 +66,11 @@ class LaplaceApproximation(nn.Module):
         eta = nn.Parameter(eta_init)
 
         if not hasattr(self, 'optim'):
-            self.optim = optim.SGD([eta], lr=lr)
+            self.optim = optim.Adam([eta], lr=lr)
         else:
             self.optim.param_groups[0]['params'] = [eta]
-            # self.optim.add_param_group({'params': [eta]})
 
         batch_size = min(self.batch_size, mu.size(-1))
-
         indices = np.arange(mu.size(-1))
 
         pbar = tqdm(
@@ -77,8 +78,10 @@ class LaplaceApproximation(nn.Module):
             desc='[E] Laplace Approximation',
             total=self.max_iter,
             leave=False,
-            miniters=10
+            miniters=100
         )
+
+        self.scaled_Sigma_inv = 1 / (torch.det(Sigma_inv) ** (1 / Sigma_inv.shape[0])) * Sigma_inv
 
         for _ in pbar:
             avg_loss = 0
@@ -86,19 +89,19 @@ class LaplaceApproximation(nn.Module):
             for i in range(math.ceil(len(indices) / batch_size)):
                 self.optim.zero_grad()
                 start_idx = i * batch_size
-                end_idx = min((i + 1) * batch_size, mu.size(-1))
+                end_idx = min((i + 1) * batch_size, len(indices))
 
                 random_idx = torch.from_numpy(indices[start_idx: end_idx]).long().to(mu.device)
 
-                loss = self(eta[:, random_idx], mu[:, random_idx], Yphi[random_idx], Sigma_inv)
+                loss = self(eta[:, random_idx], mu[:, random_idx], Yphi[random_idx])
                 loss.backward()
 
                 self.optim.step()
 
-                avg_loss += loss.item() / (end_idx - start_idx + 1)
+                avg_loss += loss.item() * (end_idx - start_idx + 1) / len(indices)
 
-            if _ % 10 == 0:
-                pbar.set_postfix({'avg_loss': avg_loss})
+            if _ % 100 == 0:
+                pbar.set_postfix({'loss': avg_loss})
 
         lamb = eta.detach()
         Delta = getDelta(lamb, Yphi, Sigma_inv).to(lamb.device)
