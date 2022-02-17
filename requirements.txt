@@ -1,0 +1,18 @@
+
+scikit-learn==1.0.2
+
+# --------- torch --------- #
+torch==1.9.0
+torchvision
+pytorch-lightning==1.4.8
+
+# --------- hydra --------- #
+hydra-core==1.1.0
+hydra-colorlog==1.1.0
+hydra-optuna-sweeper==1.1.0
+
+# --------- loggers --------- #
+wandb
+
+# --------- others --------- #
+rich

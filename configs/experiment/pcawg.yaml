@@ -12,8 +12,8 @@ model:
   e_iter: 15
   laplace_approx_conf:
     lr: 0.01
-    max_iter: 2000
-    batch_size: 512
+    max_iter: 200
+    batch_size: 128
   nmf_max_iter: 100
   tf_max_steps: 200
 

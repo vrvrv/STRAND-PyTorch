@@ -4,9 +4,21 @@
 
 # Get Started
 
+## Conda env
+```bash
+conda create -n STRAND python=3.8 -y
+conda activate STRAND
+```
+
+```bash
+git clone https://github.com/vrvrv/STRAND-PyTorch.git
+cd STRAND-PyTorch
+pip install -r requirements.txt
+```
+
 ## Preparing Data
-You must put the data in [data/](data/) directory. If the name of your dataset is `pcawg`, there must be two pickled(.pkl)
-files at data/pcawg, `snv.pkl` and `feature.pkl`.
+You must put the data in [data](data/) directory. If the name of your dataset is `pcawg`, there must be two pickled(`.pkl`)
+files at `data/pcawg`, `snv.pkl` and `feature.pkl`.
 
 ## Running STRAND
 There are several prescribed [configurations](configs/experiment) to run our model with different settings.
@@ -16,7 +28,7 @@ enter the following sentence.
 ```bash
 # trainer.gpus=0 : Only uses CPU
 # trainer.gpus=1 : Can use the single GPU
-python run.py experiment=pcawg model.rank=10 trainer.gpus=1
+python run.py experiment=pcawg model.rank=10 +trainer.gpus=1
 ```
 
 Above code brings training configuration and model hyperparameters from [configs/experiment/pcawg.yaml](configs/experiment/pcawg.yaml).

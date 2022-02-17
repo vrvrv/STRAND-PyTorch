@@ -1,3 +1,4 @@
+import time
 import pickle
 import logging
 import torch.nn as nn
@@ -100,6 +101,7 @@ class STRAND(pl.LightningModule):
                 B = (self.X.matmul(self.X.T)).cpu().numpy()
                 Q = (self.lamb.float().matmul(self.X.T)).cpu().numpy()
 
+                start = time.time()
                 self.Xi = torch.from_numpy(
                     solve_sylvester(A, B, Q)
                 ).float().to(self.device)
@@ -115,7 +117,6 @@ class STRAND(pl.LightningModule):
                     eps=self.hparams.laplace_approx_conf.eps,
                     return_Delta=(it == self.hparams.e_iter - 1)
                 )
-                # pbar.set_postfix({'negative_elbo': self.negative_elbo})
 
         else:
             # Update Lambda
@@ -142,9 +143,6 @@ class STRAND(pl.LightningModule):
             for k in range(self.hparams.rank - 1):
                 sigma_k = torch.sqrt((torch.trace(self.zeta[k]) + (self.Xi[k] ** 2).sum()) / self.hparams.p)
                 self.sigma[k] = sigma_k.clamp_(0.001)
-
-        # else:
-        #     self.H = self.Lambda.sum(1) / self.Lambda.sum()
 
         with torch.no_grad():
             self.tnf._T0 = nn.Parameter(self._T0)
@@ -173,8 +171,11 @@ class STRAND(pl.LightningModule):
         self.e_step()
         self.m_step()
 
+        print("----------")
+        s = time.time()
         self.log("negative_elbo", self.negative_elbo, on_epoch=True, prog_bar=True, logger=True)
-
+        print(time.time() - s)
+        print("-----------")
     def validataion_step(self, *args, **kwargs):
         Y = self.Y.reshape(-1, 96)
         non_zero_idx = Y.sum(dim=-1) != 0

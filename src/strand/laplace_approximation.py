@@ -4,7 +4,6 @@ import torch.nn as nn
 import torch.optim as optim
 
 import numpy as np
-import time
 from tqdm import tqdm
 
 
@@ -42,7 +41,7 @@ def getDelta_d(lamb_d, Yn_d, SigmaInv):
 
     Delta_d = torch.inverse(neg_hessian)
 
-    return 0.05 * torch.diagonal(Delta_d) + 0.95 * Delta_d
+    return 0.01 * torch.diagonal(Delta_d) + 0.99 * Delta_d
 
 
 def getDelta(lamb, Yphi, Sigma_inv):
@@ -101,8 +100,10 @@ class LaplaceApproximation(nn.Module):
             desc='[E] Laplace Approximation',
             total=self.max_iter,
             leave=False,
-            miniters=100
+            miniters=self.max_iter // 10
         )
+
+        import time
 
         Sigma_inv = inverse(Sigma, method=inv_method, eps=eps)
 
@@ -126,8 +127,9 @@ class LaplaceApproximation(nn.Module):
             if _ % 100 == 0:
                 pbar.set_postfix({'loss': avg_loss})
 
-        lamb = eta.detach()
+        print("end")
 
+        lamb = eta.detach()
         if return_Delta:
             Delta = getDelta(lamb, Yphi, Sigma_inv).to(lamb.device)
         else:
