@@ -1,11 +1,15 @@
 # @package _global_
-defaults:
-  - override /trainer: default.yaml
 
-data_name: ts
+defaults:
+  - override /model: default.yaml
+  - override /trainer: default.yaml
+  - override /datamodule: default.yaml
+  - override /logger: wandb
+
+data_name: pcawg
 
 model:
-  init: Random
+  init: random
   e_iter: 15
   tf_max_steps: 200
   laplace_approx_conf:
@@ -18,8 +22,8 @@ trainer:
   max_epochs: 30
 
 logger:
-  project: "STRAND-pcwag-random-init"
+  project: "STRAND-PCAWG-random-init"
 
 hydra:
   run:
-    dir: logs/runs/ts_random_init/rank_${model.rank}/${now:%Y-%m-%d_%H-%M-%S}
+    dir: logs/runs/pcawg_random_init/rank_${model.rank}/${now:%Y-%m-%d_%H-%M-%S}

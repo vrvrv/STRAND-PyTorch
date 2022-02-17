@@ -1,11 +1,12 @@
 import torch
-from typing import Sequence
 import numpy as np
+from typing import Sequence
 from .functions import *
 from torch.distributions import Dirichlet
 from sklearn.decomposition import NMF, non_negative_factorization
 
 from scipy.linalg import solve_sylvester
+from torch.utils.data import Dataset, DataLoader
 
 
 class Initializer(object):
@@ -94,7 +95,7 @@ class Initializer(object):
             T = nmf.fit_transform(count_tensor.sum(axis=(0, 1, 2, 3, 4)).clamp_(0.01))
             E = nmf.components_
 
-            theta = torch.from_numpy(E / np.where(E.sum(axis=0) < 1e-8, 1e-8, E.sum(axis=0)))
+            theta = E / np.where(E.sum(axis=0) < 1e-8, 1e-8, E.sum(axis=0))
 
             # Fit T0_CL, T0_CG, T0_TL, T0_TG
             Y_cl = count_tensor[0, 0].sum(axis=(0, 1, 2)).numpy().astype(np.float64)
@@ -114,7 +115,7 @@ class Initializer(object):
 
         elif method == 'random':
 
-            theta = Dirichlet(torch.ones((D, self.rank))).sample().T
+            theta = Dirichlet(torch.ones((D, self.rank))).sample().T.numpy()
 
             _cl = logit(
                 Dirichlet(torch.ones(self.rank, V)).sample().T
@@ -135,15 +136,16 @@ class Initializer(object):
 
         return theta
 
-    def init_factors(self, count_tensor, theta, method: str, factor_names):
+    def init_factors(self, count_tensor: torch.Tensor, theta: np.ndarray, method: str, factor_names):
 
-        for i, (dim, fn) in enumerate(zip(self.k_dims, factor_names), start=1):
+        for i, (dim, fn) in enumerate(zip(self.k_dims, factor_names)):
             if method == 'nmf':
                 Y_f = count_tensor.transpose(i, -2).sum(dim=(0, 1, 2, 3, 4))[:dim]
+                Y_f = np.clip(Y_f, a_min=0.01, a_max=None)
 
                 f, _, __ = non_negative_factorization(
                     n_components=self.rank,
-                    X=Y_f.clamp(0.1) / Y_f.clamp(0.1).sum(0),
+                    X=Y_f / Y_f.sum(0),
                     W=None,
                     H=theta,
                     update_H=False,
@@ -151,14 +153,47 @@ class Initializer(object):
                     beta_loss='kullback-leibler'
                 )
 
-                self.buffers[fn] = logit(torch.from_numpy(f / (f.sum(axis=0) + 0.0001)))
+                _f = logit(torch.from_numpy(f / (f.sum(axis=0) + 0.0001)))
+
             elif method == 'random':
 
                 _f = logit(
                     Dirichlet(torch.ones((self.rank, dim))).sample().T
                 )
 
-                self.buffers[fn] = _f
-
             else:
                 raise NotImplementedError
+
+            self.buffers[f"_{fn}"] = _f
+
+
+def get_yphi_dataloader(Y, phi_d, batch_size):
+    def collate_fn(batch):
+        yphi = []
+        idx = []
+        for yphi_i, i in batch:
+            yphi.append(yphi_i)
+            idx.append(i)
+
+        phi = torch.stack(yphi, dim=-3)
+        idx = torch.tensor(idx, dtype=torch.long, device=phi.device)
+        return phi, idx
+
+    class yphi_iterator(Dataset):
+        def __init__(self):
+            super().__init__()
+            self.Y = Y
+
+        def __len__(self):
+            return self.Y.size(-1)
+
+        def __getitem__(self, item):
+            return self.Y[..., [item]] * phi_d(item), item
+
+    yphi = DataLoader(
+        yphi_iterator(),
+        batch_size=batch_size,
+        collate_fn=collate_fn
+    )
+
+    return yphi

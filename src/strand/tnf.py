@@ -43,6 +43,7 @@ class TF_opt_model(nn.Module):
         self.c_dim = c_dim
 
         self.device = _t.device
+        self.epoch = 0
 
     def forward(self, yphi, idx):
 
@@ -78,14 +79,10 @@ class TF_opt_model(nn.Module):
             lr: float,
             max_steps: int
     ):
+        self.epoch += 1
         self.optim = optim.Adam(self.parameters(), lr=lr)
 
-        # if not hasattr(self, 'optim'):
-        #     self.optim = optim.Adam(self.parameters(), lr=lr)
-        # else:
-        #     self.optim.param_groups[0]['params'] = [p for p in self.parameters()]
-
-        with tqdm(total=max_steps, desc='[M] T & F optimization', leave=False) as pbar:
+        with tqdm(total=max_steps, desc=f'[{self.epoch}-th M-step] T & F optimization', leave=False) as pbar:
             cur_step = 0
             for _ in range(math.ceil(max_steps/len(yphi_loader))):
                 avg_loss = 0

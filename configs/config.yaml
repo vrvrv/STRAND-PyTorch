@@ -5,7 +5,7 @@ defaults:
   - trainer: gpu.yaml
   - model: default.yaml
   - datamodule: default.yaml
-  - callbacks: default.yaml
+  - logger: wandb.yaml
   - experiment: null
 
   - hydra: default.yaml

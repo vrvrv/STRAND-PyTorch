@@ -3,6 +3,12 @@
 [R version](https://github.com/emauryg/STRAND_R)
 
 # Get Started
+
+## Preparing Data
+You must put the data in [data/](data/) directory. If the name of your dataset is `pcawg`, there must be two pickled(.pkl)
+files at data/pcawg, `snv.pkl` and `feature.pkl`.
+
+## Running STRAND
 There are several prescribed [configurations](configs/experiment) to run our model with different settings.
 For example, if you want to run our model on `PCAWG` dataset and want to model with 10 signatures accelerated by `GPU`,
 enter the following sentence.
@@ -40,6 +46,7 @@ logger:
   name: ${data_name}_rank_${model.rank} # pcawg_rank_10
 ```
 
+You can test the code quickly by using [configs/experiment/pcawg.yaml](configs/experiment/pcawg_fast_run.yaml).
 ## Running Simulations
 
 ### Generating simulated data
@@ -63,3 +70,4 @@ with underlying `[5, 10, 20, 30]`.
 python run_sim.py experiment=simulation sid=1 n=50 m=100 true_rank=10 model.rank=5 trainer.gpus=1
 ```
 It saves the best checkpoint at `logs/runs/simulation_1/rank_5_true_rank_10_n_50_m_100`
+

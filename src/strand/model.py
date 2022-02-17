@@ -2,10 +2,9 @@ import pickle
 import logging
 import torch.nn as nn
 import pytorch_lightning as pl
-from torch.utils.data import Dataset, DataLoader
 
+from .utils import *
 from .functions import *
-from .initializer import Initializer
 from .laplace_approximation import LaplaceApproximation
 from .tnf import TF_opt_model
 
@@ -14,18 +13,6 @@ from scipy.linalg import solve_sylvester
 from tqdm import tqdm
 
 logger = logging.getLogger('src.train')
-
-
-def collate_fn(batch):
-    yphi = []
-    idx = []
-    for yphi_i, i in batch:
-        yphi.append(yphi_i)
-        idx.append(i)
-
-    phi = torch.stack(yphi, dim=-3)
-    idx = torch.tensor(idx, dtype=torch.long, device=phi.device)
-    return phi, idx
 
 
 def deviance(pred, true):
@@ -107,7 +94,7 @@ class STRAND(pl.LightningModule):
 
             # Update Xi, eta and Delta
             pbar = tqdm(range(self.hparams.e_iter), desc=f'E-STEP {self.current_epoch}', leave=False)
-            for _ in pbar:
+            for it in pbar:
                 # Update Xi
                 A = (self.Sigma_mat / (self.sigma ** 2)).cpu().numpy()
                 B = (self.X.matmul(self.X.T)).cpu().numpy()
@@ -125,7 +112,8 @@ class STRAND(pl.LightningModule):
                     Sigma=self.Sigma_mat,
                     lr=self.hparams.laplace_approx_conf.lr,
                     inv_method=self.hparams.laplace_approx_conf.inv_method,
-                    eps=self.hparams.laplace_approx_conf.eps
+                    eps=self.hparams.laplace_approx_conf.eps,
+                    return_Delta=(it == self.hparams.e_iter - 1)
                 )
                 # pbar.set_postfix({'negative_elbo': self.negative_elbo})
 
@@ -166,20 +154,8 @@ class STRAND(pl.LightningModule):
             self.tnf._n = nn.Parameter(self._n)
             self.tnf._c = nn.Parameter(self._c)
 
-        class yphi_iterator(Dataset):
-            def __init__(self_phi):
-                super(yphi_iterator, self_phi).__init__()
-
-            def __len__(self_phi):
-                return self.hparams.D
-
-            def __getitem__(self_phi, item):
-                return self.Y[..., [item]] * self.phi_d(item), item
-
-        yphi = DataLoader(
-            yphi_iterator(),
-            batch_size=self.hparams.tf_batch_size,
-            collate_fn=collate_fn
+        yphi = get_yphi_dataloader(
+            Y=self.Y, phi_d=self.phi_d, batch_size=self.hparams.tf_batch_size
         )
 
         self.tnf.fit(
@@ -188,7 +164,7 @@ class STRAND(pl.LightningModule):
             max_steps=self.hparams.tf_max_steps
         )
 
-        self._T0 = 0.99 * self.tnf._T0 + 0.01 * self._T0
+        self._T0 = self.tnf._T0
 
         for k in ['t', 'r', 'e', 'n', 'c']:
             setattr(self, f"_{k}", getattr(self.tnf, f"_{k}"))

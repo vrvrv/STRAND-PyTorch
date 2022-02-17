@@ -1,5 +1,11 @@
 # @package _global_
 
+defaults:
+  - override /model: default.yaml
+  - override /trainer: default.yaml
+  - override /datamodule: default.yaml
+  - override /logger: wandb
+
 # simulation ID
 sid: 1
 data_name: simulation_${sid}
@@ -10,6 +16,7 @@ n: null
 m: null
 
 model:
+  init: nmf
   e_dim: 12
   e_iter: 10
   tf_max_steps: 200
@@ -25,10 +32,9 @@ trainer:
 
 hydra:
   run:
-    dir: logs/runs/${data_name}/rank_${model.rank}_true_rank_${true_rank}_n_{$n}_m_{$m}
+    dir: logs/runs/${data_name}_init_${model.init}/rank_${model.rank}_true_rank_${true_rank}_n_${n}_m_${m}
 
 logger:
-  _target_: pytorch_lightning.loggers.wandb.WandbLogger
   project: STRAND-Lightning-Simulation_${sid}
   save_dir: "."
   group: ${data_name}

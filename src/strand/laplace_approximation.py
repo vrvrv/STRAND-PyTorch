@@ -83,7 +83,7 @@ class LaplaceApproximation(nn.Module):
 
         return loss.mean()
 
-    def fit(self, eta_init, mu, Yphi, Sigma, lr, inv_method='none', eps=1e-2):
+    def fit(self, eta_init, mu, Yphi, Sigma, lr, inv_method='none', eps=1e-2, return_Delta=False):
 
         Yphi.clamp_(min=0.001)
         eta = nn.Parameter(eta_init)
@@ -127,5 +127,9 @@ class LaplaceApproximation(nn.Module):
                 pbar.set_postfix({'loss': avg_loss})
 
         lamb = eta.detach()
-        Delta = getDelta(lamb, Yphi, Sigma_inv).to(lamb.device)
+
+        if return_Delta:
+            Delta = getDelta(lamb, Yphi, Sigma_inv).to(lamb.device)
+        else:
+            Delta = None
         return lamb, Delta

@@ -17,7 +17,3 @@ trainer:
 
 logger:
   project: "STRAND-pcwag-random-init"
-
-hydra:
-  run:
-    dir: logs/runs/ts_random_init/rank_${model.rank}/${now:%Y-%m-%d_%H-%M-%S}

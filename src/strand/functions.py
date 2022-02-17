@@ -1,4 +1,5 @@
 import torch
+import numpy as np
 
 
 def logit(tensor: torch.Tensor, eps=1e-20) -> torch.Tensor:
@@ -18,7 +19,13 @@ def logit(tensor: torch.Tensor, eps=1e-20) -> torch.Tensor:
     odd_ratio = tensor[:-1] / denom
     odd_ratio[odd_ratio < eps] = eps
 
-    return torch.log(odd_ratio)
+    if isinstance(odd_ratio, torch.Tensor):
+        logit = torch.log(odd_ratio)
+    elif isinstance(odd_ratio, np.ndarray):
+        logit = torch.log(torch.from_numpy(odd_ratio).float())
+    else:
+        raise TypeError
+    return logit
 
 
 def logit_to_distribution(tensor: torch.Tensor) -> torch.Tensor:
