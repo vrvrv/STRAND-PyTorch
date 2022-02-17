@@ -24,7 +24,8 @@ laplace_approx_conf:
   lr: 0.01
   max_iter: 1 # 3000
   batch_size: 512
-  Sigma_scaling: 'det' # det, eps, cut
+  inv_method: spectral
+  eps: 1e-2
 
 # M step
 tf_lr: 0.03

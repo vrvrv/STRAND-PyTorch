@@ -1,3 +1,5 @@
+import os
+import pickle
 from typing import List, Optional
 
 import hydra
@@ -18,7 +20,7 @@ from src import utils
 log = utils.get_logger(__name__)
 
 
-def train(config: DictConfig) -> Optional[float]:
+def sim(config: DictConfig) -> Optional[float]:
     """Contains training pipeline.
     Instantiates all PyTorch Lightning objects from config.
     Args:
@@ -37,7 +39,10 @@ def train(config: DictConfig) -> Optional[float]:
 
     # Init lightning model
     log.info(f"Instantiating model <{config.model._target_}>")
-    model: LightningModule = hydra.utils.instantiate(config.model)
+
+    model: LightningModule = hydra.utils.instantiate(
+        config.model
+    )
 
     # Init lightning callbacks
     callbacks: List[Callback] = []
@@ -47,29 +52,26 @@ def train(config: DictConfig) -> Optional[float]:
                 log.info(f"Instantiating callback <{cb_conf._target_}>")
                 callbacks.append(hydra.utils.instantiate(cb_conf))
 
-    # # Init lightning loggers
-    # log.info(f"Instantiating callback <{config.logger._target_}>")
-    # logger = hydra.utils.instantiate(config.logger)
+    # Init lightning loggers
+    log.info(f"Instantiating callback <{config.logger._target_}>")
+    logger = hydra.utils.instantiate(config.logger)
 
     # Init lightning trainer
-    # log.info(f"Instantiating trainer <{config.trainer._target_}>")
-    # trainer: Trainer = hydra.utils.instantiate(
-    #     config.trainer, callbacks=callbacks, logger=logger, _convert_="partial"
-    # )
     log.info(f"Instantiating trainer <{config.trainer._target_}>")
     trainer: Trainer = hydra.utils.instantiate(
-        config.trainer, callbacks=callbacks, _convert_="partial"
+        config.trainer, callbacks=callbacks, logger=logger, _convert_="partial"
     )
+
     # Send some parameters from config to all lightning loggers
-    # log.info("Logging hyperparameters!")
-    # utils.log_hyperparameters(
-    #     config=config,
-    #     model=model,
-    #     datamodule=datamodule,
-    #     trainer=trainer,
-    #     callbacks=callbacks,
-    #     logger=logger,
-    # )
+    log.info("Logging hyperparameters!")
+    utils.log_hyperparameters(
+        config=config,
+        model=model,
+        datamodule=datamodule,
+        trainer=trainer,
+        callbacks=callbacks,
+        logger=logger,
+    )
 
     # Train the model
     log.info("Starting training!")
@@ -80,15 +82,15 @@ def train(config: DictConfig) -> Optional[float]:
         trainer.test(model=model, datamodule=datamodule, ckpt_path="best")
 
     # Make sure everything closed properly
-    # log.info("Finalizing!")
-    # utils.finish(
-    #     config=config,
-    #     model=model,
-    #     datamodule=datamodule,
-    #     trainer=trainer,
-    #     callbacks=callbacks,
-    #     logger=logger,
-    # )
+    log.info("Finalizing!")
+    utils.finish(
+        config=config,
+        model=model,
+        datamodule=datamodule,
+        trainer=trainer,
+        callbacks=callbacks,
+        logger=logger,
+    )
 
     # Print path to best checkpoint
     log.info(f"Best checkpoint path:\n{trainer.checkpoint_callback.best_model_path}")
