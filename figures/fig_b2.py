@@ -1,19 +1,15 @@
 import os
-import torch
+import json
 import pickle
 import argparse
 import numpy as np
 import matplotlib.pyplot as plt
 
 from tqdm import tqdm
-from sklearn import linear_model
 from src.strand.functions import *
 from torch.distributions import MultivariateNormal
 
 cs = torch.nn.CosineSimilarity(dim=0)
-
-sid = 1
-rank = 5
 
 
 def match_signatures(theta, theta_pred):
@@ -50,7 +46,7 @@ def match_signatures(theta, theta_pred):
     return perm
 
 
-def load_result_ts(rank, n, m):
+def load_result_ts(rank, n, m, sid):
     with open(f'data/simulation_{sid}/rank_{rank}_m_{m}_n_{n}.pkl', 'rb') as f:
         _, param = pickle.load(f)
 
@@ -147,7 +143,7 @@ def load_result_ts(rank, n, m):
     return theta_true, (_05_q, _95_q)
 
 
-def load_result_strand(rank, n, m):
+def load_result_strand(rank, n, m, sid):
     with open(f'data/simulation_{sid}/rank_{rank}_m_{m}_n_{n}.pkl', 'rb') as f:
         _, param = pickle.load(f)
 
@@ -170,17 +166,13 @@ def load_result_strand(rank, n, m):
     theta_pred = logit_to_distribution(pred['lamb'])
     perm = match_signatures(theta_true, theta_pred.float())
 
-    theta_pred = torch.stack([theta_pred[i] for i in perm])
-
     _95_q = torch.stack([_95_q[i] for i in perm])
     _05_q = torch.stack([_05_q[i] for i in perm])
 
     return theta_true, (_05_q, _95_q)
 
 
-
 def plot_b(args):
-
     fig, ax = plt.subplots(4, 4, figsize=(11, 11), constrained_layout=True, sharey=True)
 
     x_bin = [
@@ -190,15 +182,17 @@ def plot_b(args):
     n_range = [50, 100, 1000, 2000]
     m_range = [50, 100, 1000, 2000]
 
-    with tqdm(total=len(n_range) * len(m_range), desc="Draw Figure (B)") as pbar:
+    raw_data = dict()
+
+    with tqdm(total=len(n_range) * len(m_range), desc=f"Fig B2 (Simulation {args.sid})") as pbar:
         for row, n in enumerate(n_range):
             for col, m in enumerate(m_range):
                 x = []
                 y_ts = []
                 y_strand = []
 
-                true, (_05_q_ts, _95_q_ts) = load_result_ts(rank=rank, n=n, m=m)
-                true, (_05_q_strand, _95_q_strand) = load_result_strand(rank=rank, n=n, m=m)
+                true, (_05_q_ts, _95_q_ts) = load_result_ts(rank=args.rank, n=n, m=m, sid=args.sid)
+                true, (_05_q_strand, _95_q_strand) = load_result_strand(rank=args.rank, n=n, m=m, sid=args.sid)
 
                 for (l, u) in x_bin:
                     idx = torch.logical_and(l <= true, true < u)
@@ -213,6 +207,18 @@ def plot_b(args):
                     y_ts.append(coverage_ts)
                     y_strand.append(coverage_strand)
 
+                raw_data[f"n:{n},m:{m},rank:{args.rank}"] = {
+                    'true': true.tolist(),
+                    'STRAND': {
+                        '0.05q': _05_q_strand.tolist(),
+                        '0.95q': _95_q_strand.tolist()
+                    },
+                    'TensorSignature': {
+                        '0.05q': _05_q_ts.tolist(),
+                        '0.95q': _95_q_ts.tolist()
+                    }
+                }
+
                 pbar.update(1)
 
                 ax[row, col].plot(x, y_ts, color='green', markersize=6, marker="+")
@@ -225,13 +231,21 @@ def plot_b(args):
 
             ax[row, 0].set_ylabel("Inferred exposure", fontsize=13)
 
+    os.makedirs(f"assets/simulation_{args.sid}", exist_ok=True)
 
-    plt.savefig("fig_b_1_ts.pdf")
+    output_file_nm = f"assets/simulation_{args.sid}/fig_b2_rank_{args.rank}.pdf"
+    output_file_nm_json = f"assets/simulation_{args.sid}/fig_b2_rank_{args.rank}.json"
+
+    plt.savefig(output_file_nm)
+
+    with open(output_file_nm_json, "w") as f:
+        json.dump(raw_data, f)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='draw figure b')
-    parser.add_argument('--coverage', action='store_true')
+    parser = argparse.ArgumentParser(description='draw figure b2')
+    parser.add_argument('--sid', type=int, default=1)
+    parser.add_argument('--rank', type=int, default=5)
     args = parser.parse_args()
 
     plot_b(args)

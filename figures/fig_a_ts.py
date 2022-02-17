@@ -1,17 +1,15 @@
 import os
-import sys
-import torch
+import json
 import pickle
+import argparse
 import matplotlib.pyplot as plt
 
-from src.strand.model import STRAND
 from src.strand.functions import *
 from itertools import chain
 from tqdm import tqdm
 
 cs = torch.nn.CosineSimilarity(dim=0)
 
-sid = 1
 r_range = [5, 10, 20, 30]
 n_range = [50, 100, 1000, 2000]
 m_range = [50, 100, 1000, 2000]
@@ -51,21 +49,21 @@ def match_signatures(theta, theta_pred):
     return perm
 
 
-def load_result(rank, n, m):
+def load_result(rank, n, m, sid):
     with open(f'data/simulation_{sid}/rank_{rank}_m_{m}_n_{n}.pkl', 'rb') as f:
         _, param = pickle.load(f)
 
-    pred = torch.load(f'checkpoints/simulation_{sid}/rank_{rank}_n_{n}_m_{m}.ckpt', map_location=torch.device('cpu'))[
+    pred = torch.load(f'checkpoints/simulation_{sid}_ts/rank_{rank}_n_{n}_m_{m}_1.ckpt', map_location=torch.device('cpu'))[
         'state_dict']
 
-    [[_cl, _cg], [_tl, _tg]] = pred['_T0']
+    [[_cl, _cg], [_tl, _tg]] = pred['S0']
 
     cl = logit_to_distribution(_cl)
     cg = logit_to_distribution(_cg)
     tl = logit_to_distribution(_tl)
     tg = logit_to_distribution(_tg)
 
-    theta = logit_to_distribution(pred['lamb'])
+    theta = logit_to_distribution(pred['E0'])
 
     true_theta = param['theta']
 
@@ -88,15 +86,16 @@ def load_result(rank, n, m):
     return signature_recognition
 
 
-def main():
+def main(args):
     fig, ax = plt.subplots(4, 4, figsize=(16, 16), constrained_layout=True, sharey=True)
     fig.suptitle(
         "Accuracy of signature inference with respect to number of samples(n) and number of mutations per sample(m)",
         fontsize=16
     )
 
-    with tqdm(total=len(n_range) * len(m_range) * len(r_range)) as pbar:
+    raw_data = dict()
 
+    with tqdm(total=len(n_range) * len(m_range) * len(r_range), desc=f"Fig A (Simulation {args.sid})") as pbar:
         for row, n in enumerate(n_range):
             for col, m in enumerate(m_range):
 
@@ -104,9 +103,11 @@ def main():
 
                 for rank in r_range:
                     sr_list.append(
-                        load_result(rank, n, m)
+                        load_result(rank, n, m, sid=args.sid)
                     )
                     pbar.update(1)
+
+                    raw_data[f"n:{n},m:{m},rank:{rank}"] = sr_list[-1]
 
                 ax[row, col].boxplot(
                     sr_list, labels=r_range
@@ -120,8 +121,16 @@ def main():
                 if col == 0:
                     ax[row, col].set_ylabel("Cosine Similarity", fontsize=12)
 
-    plt.savefig("fig_a.pdf")
+    os.makedirs(f"assets/simulation_{args.sid}", exist_ok=True)
+
+    plt.savefig(f"assets/simulation_{args.sid}/fig_a_ts.pdf")
+
+    with open(f"assets/simulation_{args.sid}/fig_a_ts.json", "w") as f:
+        json.dump(raw_data, f)
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description='draw figure b')
+    parser.add_argument('--sid', type=int, default=1)
+    args = parser.parse_args()
+    main(args)

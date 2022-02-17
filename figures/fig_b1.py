@@ -88,7 +88,7 @@ def plot_b(args):
 
     raw_data = dict()
 
-    with tqdm(total=len(n_range) * len(m_range) * args.rank, desc="Draw Figure (B)") as pbar:
+    with tqdm(total=len(n_range) * len(m_range) * args.rank, desc=f"Fig B1 (Simulation {args.sid})") as pbar:
         for row, n in enumerate(n_range):
             for col, m in enumerate(m_range):
                 x = []
@@ -106,23 +106,15 @@ def plot_b(args):
 
                     pbar.update(1)
 
+                coverage = float(torch.logical_and(_05_q <= true, true <= _95_q).float().mean())
+
                 raw_data[f"n:{n},m:{m},rank:{args.rank}"] = {
                     'true': true.tolist(),
                     'pred': pred.tolist(),
                     '0.05q': _05_q.tolist(),
-                    '0.95q': _95_q.tolist()
+                    '0.95q': _95_q.tolist(),
+                    'coverage': coverage
                 }
-
-                if args.coverage:
-                    ax[row, col].plot(
-                        (true.flatten().numpy(), true.flatten().numpy()),
-                        (_05_q.flatten().numpy(), _95_q.flatten().numpy()),
-                        c='green',
-                        lw=1.5,
-                        alpha=0.1
-                    )
-
-                coverage = torch.logical_and(_05_q <= true, true <= _95_q).float().mean()
 
                 regr = linear_model.LinearRegression()
                 x = np.hstack(x)
@@ -133,7 +125,7 @@ def plot_b(args):
                 ax[row, col].plot(x, pred.squeeze(), color='r', linewidth=2, zorder=1)
 
                 ax[row, col].set_title(
-                    "n : %d | m : %d | Cov : %.2f" % (n, m, coverage), fontsize=11  # 14
+                    "n : %d | m : %d | coverage : %.2f" % (n, m, coverage), fontsize=11  # 14
                 )
                 if row == len(n_range) - 1:
                     ax[row, col].set_xlabel("True exposure", fontsize=13)
@@ -142,12 +134,8 @@ def plot_b(args):
 
     os.makedirs(f"assets/simulation_{args.sid}", exist_ok=True)
 
-    if args.coverage:
-        output_file_nm = f"assets/simulation_{args.sid}/fig_b_coverage_{args.rank}.pdf"
-        output_file_nm_json = f"assets/simulation_{args.sid}/fig_b_coverage_{args.rank}.json"
-    else:
-        output_file_nm = f"assets/simulation_{args.sid}/fig_b_{args.rank}.pdf"
-        output_file_nm_json = f"assets/simulation_{args.sid}/fig_b_{args.rank}.json"
+    output_file_nm = f"assets/simulation_{args.sid}/fig_b1_rank_{args.rank}.pdf"
+    output_file_nm_json = f"assets/simulation_{args.sid}/fig_b1_rank_{args.rank}.json"
 
     plt.savefig(output_file_nm)
 

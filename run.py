@@ -1,7 +1,3 @@
-#
-# https://github.com/ashleve/lightning-hydra-template
-#
-
 import hydra
 from omegaconf import DictConfig
 

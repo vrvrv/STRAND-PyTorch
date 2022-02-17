@@ -54,19 +54,18 @@ def load_result(rank, n, m):
     with open(f'data/simulation_{sid}/rank_{rank}_m_{m}_n_{n}.pkl', 'rb') as f:
         _, param = pickle.load(f)
 
-    pred = torch.load(f'checkpoints/simulation_{sid}/rank_{rank}_n_{n}_m_{m}.ckpt', map_location=torch.device('cpu'))[
+    pred = torch.load(f'checkpoints/simulation_{sid}_ts/rank_{rank}_n_{n}_m_{m}_1.ckpt', map_location=torch.device('cpu'))[
         'state_dict']
 
     theta_true = param['theta']
-    theta_pred = logit_to_distribution(pred['lamb'])
+    theta_pred = logit_to_distribution(pred['E0'])
+
     perm = match_signatures(theta_true, theta_pred.float())
 
     factors_pred = {
-        't': torch.stack([logit_to_distribution(pred['_t'])[:, i] for i in perm], dim=-1),
-        'r': torch.stack([logit_to_distribution(pred['_r'])[:, i] for i in perm], dim=-1),
-        'e': torch.stack([logit_to_distribution(pred['_e'])[:, i] for i in perm], dim=-1),
-        'n': torch.stack([logit_to_distribution(pred['_n'])[:, i] for i in perm], dim=-1),
-        'c': torch.stack([logit_to_distribution(pred['_c'])[:, i] for i in perm], dim=-1)
+        'e': torch.stack([logit_to_distribution(pred['k0'])[:, i] for i in perm], dim=-1),
+        'n': torch.stack([logit_to_distribution(pred['k1'])[:, i] for i in perm], dim=-1),
+        'c': torch.stack([logit_to_distribution(pred['k2'])[:, i] for i in perm], dim=-1)
     }
 
     factors_true = param['factors']
@@ -76,12 +75,12 @@ def load_result(rank, n, m):
 def plot_c():
     fig, ax = plt.subplots(4, 4, figsize=(11, 11), constrained_layout=True, sharey=True)
 
-    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd']
+    colors = ['#2ca02c', '#d62728', '#9467bd']
 
     n_range = [50, 100, 1000, 2000]
     m_range = [50, 100, 1000, 2000]
 
-    with tqdm(total=len(n_range) * len(m_range) * rank, desc="Draw Figure (C)") as pbar:
+    with tqdm(total=len(n_range) * len(m_range), desc="Draw Figure (C)") as pbar:
         for row, n in enumerate(n_range):
             for col, m in enumerate(m_range):
                 x = []
@@ -89,12 +88,8 @@ def plot_c():
 
                 true, pred = load_result(rank=rank, n=n, m=m)
 
-                for i, f in enumerate(['t', 'r', 'e', 'n', 'c']):
-                    if f == 't':
-                        label = 'bt'
-                    elif f == 'r':
-                        label = 'br'
-                    elif f == 'e':
+                for i, f in enumerate(['e', 'n', 'c']):
+                    if f == 'e':
                         label = 'k_epi'
                     elif f == 'n':
                         label = 'k_nuc'
@@ -123,10 +118,12 @@ def plot_c():
                 if row == len(n_range) - 1:
                     ax[row, col].set_xlabel("True factors", fontsize=13)
 
+                print(n, m)
+
             ax[row, 0].set_ylabel("Inferred factors", fontsize=13)
         ax[row, col].legend(bbox_to_anchor=(1.4, 0.5), fontsize=8, title='Factors', title_fontsize=10)
 
-    plt.savefig("fig_c.pdf")
+    plt.savefig("fig_c_ts.pdf")
 
 if __name__ == "__main__":
     plot_c()

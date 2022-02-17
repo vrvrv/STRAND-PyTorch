@@ -1,5 +1,5 @@
 import os
-import torch
+import json
 import pickle
 import argparse
 import numpy as np
@@ -11,11 +11,6 @@ from src.strand.functions import *
 from torch.distributions import MultivariateNormal
 
 cs = torch.nn.CosineSimilarity(dim=0)
-
-id = 3
-sid = 1
-rank = 5
-
 
 def match_signatures(theta, theta_pred):
     """
@@ -51,12 +46,12 @@ def match_signatures(theta, theta_pred):
     return perm
 
 
-def load_result(rank, n, m):
+def load_result(rank, n, m, sid):
     with open(f'data/simulation_{sid}/rank_{rank}_m_{m}_n_{n}.pkl', 'rb') as f:
         _, param = pickle.load(f)
 
     pred = torch.load(
-        f'checkpoints/simulation_{sid}_ts/rank_{rank}_n_{n}_m_{m}_{id}.ckpt',
+        f'checkpoints/simulation_{sid}_ts/rank_{rank}_n_{n}_m_{m}_1.ckpt',
         map_location=torch.device('cpu')
     )['state_dict']
 
@@ -138,15 +133,17 @@ def plot_b(args):
     n_range = [50, 100, 1000, 2000]
     m_range = [50, 100, 1000, 2000]
 
-    with tqdm(total=len(n_range) * len(m_range) * rank, desc="Draw Figure (B)") as pbar:
+    raw_data = dict()
+
+    with tqdm(total=len(n_range) * len(m_range) * args.rank, desc=f"Fig B1 (Simulation {args.sid})") as pbar:
         for row, n in enumerate(n_range):
             for col, m in enumerate(m_range):
                 x = []
                 y = []
 
-                true, pred = load_result(rank=rank, n=n, m=m)
+                true, pred = load_result(rank=args.rank, n=n, m=m, sid=args.sid)
 
-                for r in range(rank):
+                for r in range(args.rank):
                     ax[row, col].scatter(
                         true[r], pred[r], s=20, alpha=0.2, c='pink', zorder=0
                     )
@@ -155,6 +152,11 @@ def plot_b(args):
                     y.append(pred.numpy()[r])
 
                     pbar.update(1)
+
+                raw_data[f"n:{n},m:{m},rank:{args.rank}"] = {
+                    'true': true.tolist(),
+                    'pred': pred.tolist()
+                }
 
                 regr = linear_model.LinearRegression()
                 x = np.hstack(x)
@@ -171,14 +173,20 @@ def plot_b(args):
 
             ax[row, 0].set_ylabel("Inferred exposure", fontsize=13)
 
-    output_file_nm = f"fig_b_ts_{id}_2.pdf"
+    os.makedirs(f"assets/simulation_{args.sid}", exist_ok=True)
+    output_file_nm = f"assets/simulation_{args.sid}/fig_b1_ts_rank_{args.rank}.pdf"
+    output_file_nm_json = f"assets/simulation_{args.sid}/fig_b1_ts_rank_{args.rank}.json"
 
     plt.savefig(output_file_nm)
+
+    with open(output_file_nm_json, "w") as f:
+        json.dump(raw_data, f)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='draw figure b')
-    parser.add_argument('--coverage', action='store_true')
+    parser.add_argument('--sid', type=int, default=1)
+    parser.add_argument('--rank', type=int, default=5)
     args = parser.parse_args()
 
     plot_b(args)
