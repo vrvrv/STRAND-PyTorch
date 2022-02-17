@@ -3,6 +3,7 @@
 data_name: ts
 
 model:
+  init: Random
   e_iter: 15
   tf_max_steps: 200
   laplace_approx_conf:
@@ -14,12 +15,9 @@ model:
 trainer:
   max_epochs: 30
 
-
 logger:
-  _target_: pytorch_lightning.loggers.wandb.WandbLogger
-  project: "STRAND-Lightning-Simulation_pcwag"
-  save_dir: "."
-  group: ${data_name}
-  name: ${data_name}_rank_${model.rank}
+  project: "STRAND-pcwag-random-init"
 
-
+hydra:
+  run:
+    dir: logs/runs/ts_random_init/rank_${model.rank}/${now:%Y-%m-%d_%H-%M-%S}

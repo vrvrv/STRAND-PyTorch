@@ -3,23 +3,20 @@
 data_name: ts
 
 model:
-  e_iter: 15
-  tf_max_steps: 200
+  e_iter: 1
+  nmf_max_iter: 100
+  tf_max_steps: 1
   laplace_approx_conf:
     lr: 0.01
-    max_iter: 2000
+    max_iter: 10
     batch_size: 512
-  nmf_max_iter: 100
 
 trainer:
-  max_epochs: 30
-
+  max_epochs: 1
 
 logger:
   _target_: pytorch_lightning.loggers.wandb.WandbLogger
-  project: "STRAND-Lightning-Simulation_pcwag"
+  project: "STRAND-Lightning-Simulation1"
   save_dir: "."
   group: ${data_name}
-  name: ${data_name}_rank_${model.rank}
-
-
+  name: test

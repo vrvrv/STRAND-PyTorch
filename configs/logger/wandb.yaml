@@ -1,0 +1,5 @@
+_target_: pytorch_lightning.loggers.wandb.WandbLogger
+project: "STRAND-Lightning-Liver"
+save_dir: "."
+group: ${data_name}
+name: ${data_name}_rank_${model.rank}

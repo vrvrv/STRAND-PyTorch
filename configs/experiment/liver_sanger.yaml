@@ -1,6 +1,6 @@
 # @package _global_
 
-data_name: alz
+data_name: liver_sanger
 
 model:
   e_iter: 20
@@ -17,7 +17,7 @@ trainer:
 
 logger:
   _target_: pytorch_lightning.loggers.wandb.WandbLogger
-  project: "STRAND-Lightning-Alzheimer"
+  project: "STRAND-Lightning-Liver"
   save_dir: "."
   group: ${data_name}
   name: ${data_name}_rank_${model.rank}

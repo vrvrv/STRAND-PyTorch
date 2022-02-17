@@ -35,9 +35,10 @@ def Phi(
     if name == 'lambda':
         lam = torch.cat([lam.T, torch.zeros((lam.size(1), 1), device=lam.device)], dim=1)
     elif name == 'Lambda':
-        lam = torch.log(lam + 1e-20).T
+        lam = torch.log(lam.clamp_(1e-20)).T
 
     phi = torch.log(T.clamp(1e-10)).cpu()
+
     phi = phi.unsqueeze(-3) + lam.unsqueeze(-2).cpu()
     phi += torch.log(F.clamp(1e-10)).unsqueeze(-2).cpu()
 
@@ -125,63 +126,30 @@ def factors_to_F(
         c_dim: int,
         rank: int,
         missing_rate: torch.Tensor,
-        index=None,
-        device=None,
-        uniform_missing_rate=False
+        reduction: bool = True
 ) -> torch.Tensor:
-
-    if device == 'cpu':
-        _t = _t.cpu()
-        _r = _r.cpu()
-        _e = _e.cpu()
-        _n = _n.cpu()
-        _c = _c.cpu()
-
-        missing_rate = missing_rate.cpu()
-
-        if isinstance(index, torch.Tensor):
-            index = index.cpu()
-
     t = logit_to_distribution(_t)
     r = logit_to_distribution(_r)
     e = logit_to_distribution(_e)
     n = logit_to_distribution(_n)
     c = logit_to_distribution(_c)
 
-    if not uniform_missing_rate:
-        sample_size = missing_rate.size(-1)
-
-        if index is None:
-            index = torch.arange(0, sample_size)
-            F = torch.ones((3, 3, e_dim, n_dim, c_dim, sample_size, rank), device=_t.device)
-        else:
-            F = torch.ones((3, 3, e_dim, n_dim, c_dim, len(index), rank), device=_t.device)
-
-        for i in range(2):
-            for j in range(2):
-                F[i, j] *= t[i] * r[j] * missing_rate[0, 0][index, None]
-
-            F[i, 2] *= t[i] * missing_rate[0, 1][index, None]
-
-        for j in range(2):
-            F[2, j] *= r[j] * missing_rate[1, 0][index, None]
-
-        F[2, 2] *= missing_rate[1, 1][index, None]
-
-    else:
-        missing_rate = missing_rate.mean(-1)
+    if reduction:
         F = torch.ones((3, 3, e_dim, n_dim, c_dim, 1, rank), device=_t.device)
+    else:
+        F = torch.ones((3, 3, e_dim, n_dim, c_dim, missing_rate.size(-1), rank), device=_t.device)
+        missing_rate = missing_rate.unsqueeze(-1)
 
-        for i in range(2):
-            for j in range(2):
-                F[i, j] *= t[i] * r[j] * missing_rate[0, 0]
-
-            F[i, 2] *= t[i] * missing_rate[0, 1]
-
+    for i in range(2):
         for j in range(2):
-            F[2, j] *= r[j] * missing_rate[1, 0]
+            F[i, j] *= t[i] * r[j] * missing_rate[0, 0]
 
-        F[2, 2] *= missing_rate[1, 1]
+        F[i, 2] *= t[i] * missing_rate[0, 1]
+
+    for j in range(2):
+        F[2, j] *= r[j] * missing_rate[1, 0]
+
+    F[2, 2] *= missing_rate[1, 1]
 
     for l in range(e_dim):
         F[:, :, l] *= e[l]

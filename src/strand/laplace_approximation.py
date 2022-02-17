@@ -4,7 +4,31 @@ import torch.nn as nn
 import torch.optim as optim
 
 import numpy as np
+import time
 from tqdm import tqdm
+
+
+def inverse(matrix: torch.Tensor, method='none', eps=1e-2):
+    if method == 'none':
+        inv = torch.inverse(matrix)
+    elif method == 'det1':
+        inv = 1 / (torch.det(matrix) ** (1 / matrix.shape[0])) * matrix
+    elif method == 'spectral':
+        e, Q = torch.eig(matrix, eigenvectors=True)
+        P = e[:, 0]
+
+        mask = P > eps
+
+        Q = Q[:, mask]
+        P = P[mask]
+
+        inv = (Q.matmul(torch.diag(1 / P)).matmul(Q.T))
+    elif method == 'add':
+        inv = torch.inverse(matrix + eps * torch.eye(matrix.size(0), device=matrix.device))
+    else:
+        raise NotImplementedError
+
+    return inv.float()
 
 
 def getDelta_d(lamb_d, Yn_d, SigmaInv):
@@ -18,7 +42,7 @@ def getDelta_d(lamb_d, Yn_d, SigmaInv):
 
     Delta_d = torch.inverse(neg_hessian)
 
-    return 0.01 * torch.diagonal(Delta_d.clamp(0.01)) + 0.99 * Delta_d
+    return 0.05 * torch.diagonal(Delta_d) + 0.95 * Delta_d
 
 
 def getDelta(lamb, Yphi, Sigma_inv):
@@ -46,30 +70,30 @@ class LaplaceApproximation(nn.Module):
 
     def forward(self, eta, mu, Yphi, Sigma_inv):
 
-        loss = 0.5 * torch.diag((eta - mu).T.matmul(Sigma_inv).matmul(eta - mu))
+        loss1 = 0.5 * torch.diag((eta - mu).T.matmul(Sigma_inv).matmul(eta - mu))
 
-        loss = loss - (Yphi * torch.log(
+        loss2 = - (Yphi * torch.log(
             torch.softmax(
                 torch.cat([eta, torch.zeros(1, eta.size(1), device=eta.device)], dim=0),
                 dim=0
             ).T + 1e-10
         )).sum(-1)
 
+        loss = loss1 + loss2
+
         return loss.mean()
 
-    def fit(self, eta_init, mu, Yphi, Sigma_inv, lr):
+    def fit(self, eta_init, mu, Yphi, Sigma, lr, inv_method='none', eps=1e-2):
 
         Yphi.clamp_(min=0.001)
         eta = nn.Parameter(eta_init)
 
         if not hasattr(self, 'optim'):
-            self.optim = optim.SGD([eta], lr=lr)
+            self.optim = optim.Adam([eta], lr=lr)
         else:
             self.optim.param_groups[0]['params'] = [eta]
-            # self.optim.add_param_group({'params': [eta]})
 
         batch_size = min(self.batch_size, mu.size(-1))
-
         indices = np.arange(mu.size(-1))
 
         pbar = tqdm(
@@ -77,8 +101,10 @@ class LaplaceApproximation(nn.Module):
             desc='[E] Laplace Approximation',
             total=self.max_iter,
             leave=False,
-            miniters=10
+            miniters=100
         )
+
+        Sigma_inv = inverse(Sigma, method=inv_method, eps=eps)
 
         for _ in pbar:
             avg_loss = 0
@@ -86,7 +112,7 @@ class LaplaceApproximation(nn.Module):
             for i in range(math.ceil(len(indices) / batch_size)):
                 self.optim.zero_grad()
                 start_idx = i * batch_size
-                end_idx = min((i + 1) * batch_size, mu.size(-1))
+                end_idx = min((i + 1) * batch_size, len(indices))
 
                 random_idx = torch.from_numpy(indices[start_idx: end_idx]).long().to(mu.device)
 
@@ -95,12 +121,11 @@ class LaplaceApproximation(nn.Module):
 
                 self.optim.step()
 
-                avg_loss += loss.item() / (end_idx - start_idx + 1)
+                avg_loss += loss.item() * (end_idx - start_idx + 1) / len(indices)
 
-            if _ % 10 == 0:
-                pbar.set_postfix({'avg_loss': avg_loss})
+            if _ % 100 == 0:
+                pbar.set_postfix({'loss': avg_loss})
 
         lamb = eta.detach()
         Delta = getDelta(lamb, Yphi, Sigma_inv).to(lamb.device)
-
         return lamb, Delta
