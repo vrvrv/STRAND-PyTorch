@@ -1,9 +1,16 @@
 #!/bin/bash
 
-for n in 50 100 1000 2000
+sid=2
+
+python fig_a.py --sid=${sid};
+python fig_a_ts.py --sid=${sid};
+
+for rank in 5 10 20 30
 do
-  for m in 50 100 1000 2000
-  do
-    python run_sim.py experiment=simulation_2 n=$n m=$m true_rank=5 model.rank=5 trainer.gpus=0
-  done
+  echo "rank:${rank}"
+  python fig_b1.py --sid=${sid} --rank=${rank};
+  python fig_b1_ts.py --sid=${sid} --rank=${rank};
+  python fig_b2.py --sid=${sid} --rank=${rank};
 done
+
+

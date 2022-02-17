@@ -13,7 +13,7 @@ enter the following sentence.
 python run.py experiment=pcawg model.rank=10 trainer.gpus=1
 ```
 
-It brings training configuration and model hyperparameters from [configs/experiment/pcawg.yaml](configs/experiment/pcawg.yaml).
+Above code brings training configuration and model hyperparameters from [configs/experiment/pcawg.yaml](configs/experiment/pcawg.yaml).
 The `YAML` file looks
 ```yaml
 # @package _global_
@@ -34,8 +34,32 @@ trainer:
 
 logger:
   _target_: pytorch_lightning.loggers.wandb.WandbLogger
-  project: "STRAND-Lightning-Simulation_pcwag"
+  project: "STRAND-Lightning-pcawg"
   save_dir: "."
   group: ${data_name} # pcawg
   name: ${data_name}_rank_${model.rank} # pcawg_rank_10
 ```
+
+## Running Simulations
+
+### Generating simulated data
+```bash
+# id (int) : ID of simulated data
+# nbinom (bool) : The distribution of count tensor
+# disp_param (float) : dispersion parameter -> Variance = Mean + Mean ** 2 / disp_param
+python simul_data_generator.py --id=1 --nbinom=True --disp_param=50
+```
+It generates the data with number of samples `[50, 100, 1000, 2000]`, number of mutations per sample `[50, 100, 1000, 2000]`
+with underlying `[5, 10, 20, 30]`.
+
+### Traing `STRAND` on simulated data
+```
+# sid (int) : ID of simulated data
+# n : number of samples
+# m : number of mutations per sample
+# true_rank : true number of signatures of the generated data
+# rank : the rank of model fitting
+
+python run_sim.py experiment=simulation sid=1 n=50 m=100 true_rank=10 model.rank=5 trainer.gpus=1
+```
+It saves the best checkpoint at `logs/runs/simulation_1/rank_5_true_rank_10_n_50_m_100`
