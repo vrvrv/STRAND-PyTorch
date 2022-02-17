@@ -3,9 +3,10 @@
 # specify here default training configuration
 defaults:
   - trainer: gpu.yaml
+  - logger: wandb.yaml
+  - callbacks: default.yaml
   - model: default.yaml
   - datamodule: default.yaml
-  - callbacks: default.yaml
   - experiment: null
 
   - hydra: default.yaml

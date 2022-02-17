@@ -15,7 +15,10 @@ c_dim: 2
 use_covariate: True
 
 # Initialization
-init: NMF
+init_method:
+  T0: nmf
+  factors: nmf
+  Xi: sylvester
 nmf_max_iter: 1000
 
 # E step

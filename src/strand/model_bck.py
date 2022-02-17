@@ -1,19 +1,35 @@
-import time
 import pickle
 import logging
+import torch
 import torch.nn as nn
+import numpy as np
 import pytorch_lightning as pl
+from torch.utils.data import Dataset, DataLoader
+from torch.distributions import Dirichlet
 
-from .utils import *
 from .functions import *
 from .laplace_approximation import LaplaceApproximation
 from .tnf import TF_opt_model
 
 from scipy.linalg import solve_sylvester
+from sklearn.decomposition import NMF, non_negative_factorization
 
 from tqdm import tqdm
+from typing import Tuple
 
 logger = logging.getLogger('src.train')
+
+
+def collate_fn(batch):
+    yphi = []
+    idx = []
+    for yphi_i, i in batch:
+        yphi.append(yphi_i)
+        idx.append(i)
+
+    phi = torch.stack(yphi, dim=-3)
+    idx = torch.tensor(idx, dtype=torch.long, device=phi.device)
+    return phi, idx
 
 
 def deviance(pred, true):
@@ -32,7 +48,7 @@ class STRAND(pl.LightningModule):
                  c_dim: int,
                  laplace_approx_conf: dict,
                  use_covariate: bool = True,
-                 init_method: dict = {'T0': 'nmf', 'factors': 'nmf', 'Xi': 'sylvester'},
+                 init: str = 'NMF',
                  nmf_max_iter: int = 10000,
                  e_iter: int = 20,
                  tf_lr: float = 0.1,
@@ -57,18 +73,12 @@ class STRAND(pl.LightningModule):
             )
             self.hparams['V'], self.hparams['D'] = self.Y.size(-2), self.Y.size(-1)
 
-        init = Initializer(
-            rank=self.hparams.rank,
-            k_dims=[t_dim, r_dim, e_dim, n_dim, c_dim],
-            T0_init=init_method['T0'],
-            factors_init=init_method['factors'],
-            Xi_init=init_method['Xi'],
-            nmf_max_iter=nmf_max_iter
-        )
-        init.init(count_tensor=self.Y, feature=self.X, factor_names=['t', 'r', 'e', 'n', 'c'])
-
-        for param_name, param in init.buffers.items():
-            self.register_buffer(param_name, param)
+        if self.hparams.init == 'NMF':
+            self.nmf_init()
+        elif self.hparams.init == 'Random':
+            self.random_init()
+        else:
+            raise NotImplementedError
 
         self.la = LaplaceApproximation(
             max_iter=self.hparams.laplace_approx_conf.max_iter,
@@ -83,6 +93,222 @@ class STRAND(pl.LightningModule):
 
         self.automatic_optimization = False
 
+    def nmf_init(self):
+
+        def fixed_NMF(X: np.array, W: np.array, H: np.array):
+            w, h, _ = non_negative_factorization(
+                X=X,
+                n_components=self.hparams.rank,
+                max_iter=self.hparams.nmf_max_iter,
+                W=W,
+                H=H,
+                update_H=False,
+                init='custom',
+                solver='mu',
+                beta_loss='kullback-leibler'
+            )
+            return w, h
+
+        nmf = NMF(
+            n_components=self.hparams.rank,
+            solver='mu',
+            init='nndsvda',
+            beta_loss='kullback-leibler',
+            tol=1e-8,
+            max_iter=self.hparams.nmf_max_iter
+        )
+
+        T = nmf.fit_transform(self.Y.sum(axis=(0, 1, 2, 3, 4)).clamp_(0.01))
+        E = nmf.components_
+
+        # T, E = fixed_NMF(X=self.Y.sum(axis=(0, 1, 2, 3, 4)), W=T, H=E)
+
+        theta = torch.from_numpy(E / np.where(E.sum(axis=0) < 1e-8, 1e-8, E.sum(axis=0)))
+
+        # Fit T0_CL, T0_CG, T0_TL, T0_TG
+        Y_cl = self.Y[0, 0].cpu().sum(axis=(0, 1, 2)).numpy().astype(np.float64)
+        Y_cl_sum = Y_cl.sum(0)
+        Y_cl_idx = np.arange(self.hparams.D)[Y_cl_sum > np.quantile(Y_cl_sum, 0.1)]
+
+        Y_cg = self.Y[0, 1].cpu().sum(axis=(0, 1, 2)).numpy().astype(np.float64)
+        Y_cg_sum = Y_cg.sum(0)
+        Y_cg_idx = np.arange(self.hparams.D)[Y_cg_sum > np.quantile(Y_cg_sum, 0.1)]
+
+        Y_tl = self.Y[1, 0].cpu().sum(axis=(0, 1, 2)).numpy().astype(np.float64)
+        Y_tl_sum = Y_tl.sum(0)
+        Y_tl_idx = np.arange(self.hparams.D)[Y_tl_sum > np.quantile(Y_tl_sum, 0.1)]
+
+        Y_tg = self.Y[1, 1].cpu().sum(axis=(0, 1, 2)).numpy().astype(np.float64)
+        Y_tg_sum = Y_tg.sum(0)
+        Y_tg_idx = np.arange(self.hparams.D)[Y_tg_sum > np.quantile(Y_tg_sum, 0.1)]
+
+        cl, _ = fixed_NMF(X=Y_cl[:, Y_cl_idx], W=T, H=E[:, Y_cl_idx])
+        cg, _ = fixed_NMF(X=Y_cg[:, Y_cg_idx], W=T, H=E[:, Y_cg_idx])
+        tl, _ = fixed_NMF(X=Y_tl[:, Y_tl_idx], W=T, H=E[:, Y_tl_idx])
+        tg, _ = fixed_NMF(X=Y_tg[:, Y_tg_idx], W=T, H=E[:, Y_tg_idx])
+
+        _cl = logit(torch.from_numpy(cl / cl.sum(axis=0)))
+        _cg = logit(torch.from_numpy(cg / cg.sum(axis=0)))
+        _tl = logit(torch.from_numpy(tl / tl.sum(axis=0)))
+        _tg = logit(torch.from_numpy(tg / tg.sum(axis=0)))
+
+        self.register_buffer(
+            '_T0', torch.stack([_cl, _cg, _tl, _tg]).reshape(2, 2, self.hparams.V - 1, self.hparams.rank)
+        )
+
+        _theta = logit(theta)
+
+        logger.info("Initialized T0")
+
+        for i, factor in enumerate(['t', 'r', 'e', 'n', 'c']):
+            logger.info(f"Intializing factor, {factor}")
+
+            Y_f = self.Y.transpose(i, -2).sum(dim=(0, 1, 2, 3, 4))
+
+            if factor in {'t', 'r'}:
+                # Y_f[0] = Y_f[0] / (self.missing_rate[0, 0] + self.missing_rate[0, 1])
+                # Y_f[1] = Y_f[1] / (self.missing_rate[0, 0] + self.missing_rate[1, 0])
+
+                Y_f = Y_f[:2]
+
+            f, _, __ = non_negative_factorization(
+                n_components=self.hparams.rank,
+                X=Y_f.clamp(0.1) / Y_f.clamp(0.1).sum(0),
+                W=None,
+                H=E,
+                solver='mu',
+                beta_loss='kullback-leibler',
+                update_H=False
+            )
+
+            self.register_buffer(
+                f'_{factor}', logit(torch.from_numpy(f / (f.sum(axis=0) + 0.0001)))
+            )
+
+        logger.info("Initialized factors t, r, e, n, c")
+
+        if self.hparams.use_covariate:
+            logger.info("Initialize zeta")
+            tmp = 0.1 * torch.rand(self.hparams.rank - 1, self.hparams.p, 2)
+            self.register_buffer(
+                'zeta', torch.eye(self.hparams.p) + tmp.matmul(tmp.transpose(-1, -2))
+            )
+
+            logger.info("Initialize sigma")
+            self.register_buffer(
+                'sigma', torch.ones(self.hparams.rank - 1)
+            )
+
+            logger.info("Intialize Sigma_mat")
+            tmp = torch.randn(self.hparams.rank - 1, self.hparams.rank - 1)
+            self.register_buffer(
+                'Sigma_mat', torch.eye(self.hparams.rank - 1) + tmp.matmul(tmp.T)
+            )
+
+            logger.info("Initialize Delta")
+            self.register_buffer(
+                'Delta', self.Sigma_mat.repeat((self.hparams.D, 1, 1))
+            )
+
+            logger.info("Initialize lambda")
+            self.register_buffer(
+                'lamb', _theta
+            )
+
+            logger.info("Initialize Xi")
+            A = (self.Sigma_mat / (self.sigma ** 2)).numpy()
+            B = (self.X.matmul(self.X.T)).numpy()
+            Q = (self.lamb.float().matmul(self.X.T)).numpy()
+
+            Y = solve_sylvester(A, B, Q)
+
+            self.register_buffer(
+                'Xi', torch.from_numpy(Y).float()
+            )
+
+        else:
+            logger.info("Initialize Lambda")
+            self.register_buffer(
+                'Lambda', logit_to_distribution(_theta)
+            )
+
+            logger.info("Initialize H")
+            self.register_buffer(
+                'H', torch.ones(self.hparams.rank)
+            )
+
+        logger.info("Initialization Ended")
+
+    def random_init(self) -> None:
+
+        _cl = logit(
+            Dirichlet(torch.ones(self.hparams.rank, self.hparams.V)).sample().T
+        )
+        _cg = logit(
+            Dirichlet(torch.ones(self.hparams.rank, self.hparams.V)).sample().T
+        )
+        _tl = logit(
+            Dirichlet(torch.ones(self.hparams.rank, self.hparams.V)).sample().T
+        )
+        _tg = logit(
+            Dirichlet(torch.ones(self.hparams.rank, self.hparams.V)).sample().T
+        )
+
+        self.register_buffer(
+            '_T0', torch.stack([_cl, _cg, _tl, _tg]).reshape(2, 2, self.hparams.V - 1, self.hparams.rank)
+        )
+
+        _theta = logit(
+            Dirichlet(torch.ones((self.hparams.D, self.hparams.rank))).sample().T
+        )
+
+        for i, factor in enumerate(['t', 'r', 'e', 'n', 'c']):
+            dim = getattr(self.hparams, f"{factor}_dim")
+
+            _f = logit(
+                Dirichlet(torch.ones((self.hparams.rank, dim))).sample().T
+            )
+
+            self.register_buffer(
+                f'_{factor}', _f
+            )
+
+        if self.X is not None:
+            tmp = 0.1 * torch.rand(self.hparams.rank - 1, self.hparams.p, 2)
+            self.register_buffer(
+                'zeta', torch.eye(self.hparams.p) + tmp.matmul(tmp.transpose(-1, -2))
+            )
+
+            self.register_buffer(
+                'sigma', torch.ones(self.hparams.rank - 1)
+            )
+
+            tmp = torch.randn(self.hparams.rank - 1, self.hparams.rank - 1)
+            self.register_buffer(
+                'Sigma_mat', (torch.eye(self.hparams.rank - 1) + tmp.matmul(tmp.T)).float()
+            )
+
+            self.register_buffer(
+                'Delta', self.Sigma_mat.repeat((self.hparams.D, 1, 1))
+            )
+
+            self.register_buffer(
+                'lamb', _theta
+            )
+
+            self.register_buffer(
+                'Xi', torch.normal(0, 1, size=(self.hparams.rank - 1, self.hparams.p)).double()
+            )
+
+        else:
+            self.register_buffer(
+                'Lambda', logit_to_distribution(_theta)
+            )
+
+            self.register_buffer(
+                'H', torch.ones(self.hparams.rank)
+            )
+
     def e_step(self):
 
         if self.hparams.use_covariate:
@@ -95,13 +321,12 @@ class STRAND(pl.LightningModule):
 
             # Update Xi, eta and Delta
             pbar = tqdm(range(self.hparams.e_iter), desc=f'E-STEP {self.current_epoch}', leave=False)
-            for it in pbar:
+            for _ in pbar:
                 # Update Xi
                 A = (self.Sigma_mat / (self.sigma ** 2)).cpu().numpy()
                 B = (self.X.matmul(self.X.T)).cpu().numpy()
                 Q = (self.lamb.float().matmul(self.X.T)).cpu().numpy()
 
-                start = time.time()
                 self.Xi = torch.from_numpy(
                     solve_sylvester(A, B, Q)
                 ).float().to(self.device)
@@ -114,9 +339,9 @@ class STRAND(pl.LightningModule):
                     Sigma=self.Sigma_mat,
                     lr=self.hparams.laplace_approx_conf.lr,
                     inv_method=self.hparams.laplace_approx_conf.inv_method,
-                    eps=self.hparams.laplace_approx_conf.eps,
-                    return_Delta=(it == self.hparams.e_iter - 1)
+                    eps=self.hparams.laplace_approx_conf.eps
                 )
+                # pbar.set_postfix({'negative_elbo': self.negative_elbo})
 
         else:
             # Update Lambda
@@ -144,6 +369,9 @@ class STRAND(pl.LightningModule):
                 sigma_k = torch.sqrt((torch.trace(self.zeta[k]) + (self.Xi[k] ** 2).sum()) / self.hparams.p)
                 self.sigma[k] = sigma_k.clamp_(0.001)
 
+        # else:
+        #     self.H = self.Lambda.sum(1) / self.Lambda.sum()
+
         with torch.no_grad():
             self.tnf._T0 = nn.Parameter(self._T0)
             self.tnf._t = nn.Parameter(self._t)
@@ -152,8 +380,20 @@ class STRAND(pl.LightningModule):
             self.tnf._n = nn.Parameter(self._n)
             self.tnf._c = nn.Parameter(self._c)
 
-        yphi = get_yphi_dataloader(
-            Y=self.Y, phi_d=self.phi_d, batch_size=self.hparams.tf_batch_size
+        class yphi_iterator(Dataset):
+            def __init__(self_phi):
+                super(yphi_iterator, self_phi).__init__()
+
+            def __len__(self_phi):
+                return self.hparams.D
+
+            def __getitem__(self_phi, item):
+                return self.Y[..., [item]] * self.phi_d(item), item
+
+        yphi = DataLoader(
+            yphi_iterator(),
+            batch_size=self.hparams.tf_batch_size,
+            collate_fn=collate_fn
         )
 
         self.tnf.fit(
@@ -162,7 +402,7 @@ class STRAND(pl.LightningModule):
             max_steps=self.hparams.tf_max_steps
         )
 
-        self._T0 = self.tnf._T0
+        self._T0 = 0.99 * self.tnf._T0 + 0.01 * self._T0
 
         for k in ['t', 'r', 'e', 'n', 'c']:
             setattr(self, f"_{k}", getattr(self.tnf, f"_{k}"))
@@ -171,11 +411,8 @@ class STRAND(pl.LightningModule):
         self.e_step()
         self.m_step()
 
-        print("----------")
-        s = time.time()
         self.log("negative_elbo", self.negative_elbo, on_epoch=True, prog_bar=True, logger=True)
-        print(time.time() - s)
-        print("-----------")
+
     def validataion_step(self, *args, **kwargs):
         Y = self.Y.reshape(-1, 96)
         non_zero_idx = Y.sum(dim=-1) != 0

@@ -6,23 +6,20 @@ defaults:
   - override /datamodule: default.yaml
   - override /logger: wandb
 
-data_name: alz
+data_name: pcawg
 
 model:
-  e_iter: 20
-  tf_batch_size: 69
-  tf_max_steps: 200
+  e_iter: 15
   laplace_approx_conf:
     lr: 0.01
-    max_iter: 2000
-    batch_size: 69
-  nmf_max_iter: 1000
+    max_iter: 200
+    batch_size: 128
+  nmf_max_iter: 100
+  tf_max_steps: 200
 
 trainer:
   max_epochs: 30
 
 logger:
-  project: "STRAND-Alzheimer"
+  project: "STRAND-PCAWG"
 
-run:
-  dir: logs/runs/${data_name}_rank_${model.rank}/${now:%Y-%m-%d_%H-%M-%S}
