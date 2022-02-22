@@ -1,4 +1,4 @@
-
+setuptools==59.5.0
 scikit-learn==1.0.2
 
 # --------- torch --------- #
@@ -15,4 +15,4 @@ hydra-optuna-sweeper==1.1.0
 wandb
 
 # --------- others --------- #
-rich
+ric1h

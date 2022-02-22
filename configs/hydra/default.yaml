@@ -1,3 +1,1 @@
 # output paths for hydra logs
-run:
-  dir: logs/runs/${data_name}_T0_init_${model.init_method.T0}_rank_${model.rank}

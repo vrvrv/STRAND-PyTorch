@@ -1,12 +1,19 @@
 import torch
 import numpy as np
+import torch.nn as nn
 from typing import Sequence
 from .functions import *
+from .joint_init import Joint_INIT
 from torch.distributions import Dirichlet
 from sklearn.decomposition import NMF, non_negative_factorization
 
 from scipy.linalg import solve_sylvester
 from torch.utils.data import Dataset, DataLoader
+
+if torch.cuda.is_available():
+    device = torch.device('cuda')
+else:
+    device = torch.device('cpu')
 
 
 class Initializer(object):
@@ -16,6 +23,7 @@ class Initializer(object):
                  T0_init: str = 'nmf',
                  factors_init: str = 'nmf',
                  Xi_init: str = 'sylvester',
+                 init_jointly: bool = True,
                  nmf_max_iter: int = 1000
                  ):
 
@@ -25,6 +33,7 @@ class Initializer(object):
         self.T0_init = T0_init
         self.factors_init = factors_init
         self.Xi_init = Xi_init
+        self.init_jointly = init_jointly
         self.nmf_max_iter = nmf_max_iter
 
         self.buffers = dict()
@@ -79,23 +88,25 @@ class Initializer(object):
             self.buffers['Lambda'] = logit_to_distribution(_theta)
             self.buffers['H'] = torch.ones(self.rank)
 
+        self._init_jointly(count_tensor, feature=feature)
+
     def init_T0(self, count_tensor, method: str):
         V, D = count_tensor.size(-2), count_tensor.size(-1)
+        nmf = NMF(
+            n_components=self.rank,
+            solver='mu',
+            init='nndsvda',
+            beta_loss='kullback-leibler',
+            tol=1e-8,
+            max_iter=self.nmf_max_iter
+        )
+
+        T = nmf.fit_transform(count_tensor.sum(axis=(0, 1, 2, 3, 4)).clamp_(0.01))
+        E = nmf.components_
+
+        theta = E / np.where(E.sum(axis=0) < 1e-8, 1e-8, E.sum(axis=0))
 
         if method == 'nmf':
-            nmf = NMF(
-                n_components=self.rank,
-                solver='mu',
-                init='nndsvda',
-                beta_loss='kullback-leibler',
-                tol=1e-8,
-                max_iter=self.nmf_max_iter
-            )
-
-            T = nmf.fit_transform(count_tensor.sum(axis=(0, 1, 2, 3, 4)).clamp_(0.01))
-            E = nmf.components_
-
-            theta = E / np.where(E.sum(axis=0) < 1e-8, 1e-8, E.sum(axis=0))
 
             # Fit T0_CL, T0_CG, T0_TL, T0_TG
             Y_cl = count_tensor[0, 0].sum(axis=(0, 1, 2)).numpy().astype(np.float64)
@@ -114,8 +125,6 @@ class Initializer(object):
             _tg = logit(torch.from_numpy(tg / tg.sum(axis=0)))
 
         elif method == 'random':
-
-            theta = Dirichlet(torch.ones((D, self.rank))).sample().T.numpy()
 
             _cl = logit(
                 Dirichlet(torch.ones(self.rank, V)).sample().T
@@ -166,6 +175,35 @@ class Initializer(object):
 
             self.buffers[f"_{fn}"] = _f
 
+    def _init_jointly(self, count_tensor: torch.Tensor, feature=None):
+
+        if feature is not None:
+            _theta = self.buffers['lamb']
+        else:
+            _theta = logit(self.buffers['H'])
+
+        joint_init = Joint_INIT(
+            count_tensor=count_tensor,
+            _theta=_theta,
+            **self.buffers
+        ).to(device)
+
+        joint_init.fit(batch_size=128, learning_rate=0.1, device=device, max_iter=100)
+
+        self.buffers['_T0'] = joint_init._T0.detach().cpu()
+
+        self.buffers['_t'] = joint_init._t.detach().cpu()
+        self.buffers['_r'] = joint_init._r.detach().cpu()
+        self.buffers['_e'] = joint_init._e.detach().cpu()
+        self.buffers['_n'] = joint_init._n.detach().cpu()
+        self.buffers['_c'] = joint_init._c.detach().cpu()
+        self.buffers['_at'] = joint_init._at.detach().cpu()
+        self.buffers['_ar'] = joint_init._ar.detach().cpu()
+
+        if feature is not None:
+            self.buffers['lamb'] = joint_init._theta.detach().cpu()
+        else:
+            self.buffers['H'] = logit_to_distribution(joint_init._theta.detach().cpu())
 
 def get_yphi_dataloader(Y, phi_d, batch_size):
     def collate_fn(batch):

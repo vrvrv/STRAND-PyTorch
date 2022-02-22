@@ -9,6 +9,7 @@
 conda create -n STRAND python=3.8 -y
 conda activate STRAND
 ```
+After activating the environment, you can install required packages as follows
 
 ```bash
 git clone https://github.com/vrvrv/STRAND-PyTorch.git
@@ -34,31 +35,36 @@ python run.py experiment=pcawg model.rank=10 +trainer.gpus=1
 Above code brings training configuration and model hyperparameters from [configs/experiment/pcawg.yaml](configs/experiment/pcawg.yaml).
 The `YAML` file looks
 ```yaml
-# @package _global_
+defaults:
+  - override /model: default.yaml
+  - override /trainer: default.yaml
+  - override /datamodule: default.yaml
+  - override /logger: wandb
 
 data_name: pcawg
 
 model:
+  init_method:
+    T0: random
+    factors: random
+    Xi: random
   e_iter: 15
-  tf_max_steps: 200
   laplace_approx_conf:
     lr: 0.01
-    max_iter: 2000
-    batch_size: 512
+    max_iter: 200
+    batch_size: 128
   nmf_max_iter: 100
+  tf_max_steps: 200
 
 trainer:
   max_epochs: 30
 
 logger:
-  _target_: pytorch_lightning.loggers.wandb.WandbLogger
-  project: "STRAND-Lightning-pcawg"
-  save_dir: "."
-  group: ${data_name} # pcawg
-  name: ${data_name}_rank_${model.rank} # pcawg_rank_10
-```
+  project: "STRAND-PCAWG"
 
-You can test the code quickly by using [configs/experiment/pcawg.yaml](configs/experiment/pcawg_fast_run.yaml).
+```
+It overrides the default model configuration from [model/defaut.yaml](configs/model/default.yaml).
+You can test the code quickly by using [configs/experiment/pcawg_fast_run.yaml](configs/experiment/pcawg_fast_run.yaml).
 ## Running Simulations
 
 ### Generating simulated data
@@ -81,5 +87,5 @@ with underlying `[5, 10, 20, 30]`.
 
 python run_sim.py experiment=simulation sid=1 n=50 m=100 true_rank=10 model.rank=5 trainer.gpus=1
 ```
-It saves the best checkpoint at `logs/runs/simulation_1/rank_5_true_rank_10_n_50_m_100`
-
+It saves the best checkpoint at `logs/runs/simulation_1/rank_5_true_rank_10_n_50_m_100`. You can convert the `.ckpt` formatted file
+into `.h5` format. Refer to [this](docs/ckpt_to_h5.ipynb) notebook.

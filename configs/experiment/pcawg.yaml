@@ -9,6 +9,10 @@ defaults:
 data_name: pcawg
 
 model:
+  init_method:
+    T0: random
+    factors: random
+    Xi: random
   e_iter: 15
   laplace_approx_conf:
     lr: 0.01
