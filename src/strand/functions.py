@@ -47,7 +47,7 @@ def Phi(
     phi = torch.log(T.clamp(1e-10)).cpu()
 
     phi = phi.unsqueeze(-3) + lam.unsqueeze(-2).cpu()
-    phi += torch.log(F.clamp(1e-10)).unsqueeze(-2).cpu()
+    phi = torch.log(F.clamp(1e-10)).unsqueeze(-2).cpu() + phi
 
     return torch.softmax(phi, dim=-1)
 
@@ -85,7 +85,7 @@ def Yphi(
     return yphi.sum(axis=(0, 1, 2, 3, 4, -2)).to(device)
 
 
-def stack(_T0: torch.Tensor, _t: torch.Tensor, _r: torch.Tensor, e_dim: int, n_dim: int, c_dim: int, rank: int):
+def stack(_T0: torch.Tensor, _t: torch.Tensor, _r: torch.Tensor, e_dim: int, n_dim: int, c_dim: int):
     [[_cl, _cg], [_tl, _tg]] = _T0
 
     cl = logit_to_distribution(_cl)
@@ -97,7 +97,7 @@ def stack(_T0: torch.Tensor, _t: torch.Tensor, _r: torch.Tensor, e_dim: int, n_d
     r = logit_to_distribution(_r)
 
     V, K = _T0.size()[-2:]
-    T = torch.empty((3, 3, e_dim, n_dim, c_dim, V + 1, K), device=_T0.device)
+    # T = torch.empty((3, 3, e_dim, n_dim, c_dim, V + 1, K), device=_T0.device)
 
     t0 = t[0]
     r0 = r[0]
@@ -109,15 +109,19 @@ def stack(_T0: torch.Tensor, _t: torch.Tensor, _r: torch.Tensor, e_dim: int, n_d
 
     __ = t0 * r0 * cl + t0 * (1 - r0) * cg + (1 - t0) * r0 * tl + (1 - t0) * (1 - r0) * tg
 
-    T[0, 0] = cl
-    T[1, 0] = tl
-    T[2, 0] = _l
-    T[0, 1] = cg
-    T[1, 1] = tg
-    T[2, 1] = _g
-    T[0, 2] = c_
-    T[1, 2] = t_
-    T[2, 2] = __
+    T = torch.stack([
+        cl, cg, c_, tl, tg, t_, _l, _g, __
+    ]).reshape(3, 3, 1, 1, 1, V+1, K).to(_T0.device).float()
+
+    # T[0, 0] = cl
+    # T[1, 0] = tl
+    # T[2, 0] = _l
+    # T[0, 1] = cg
+    # T[1, 1] = tg
+    # T[2, 1] = _g
+    # T[0, 2] = c_
+    # T[1, 2] = t_
+    # T[2, 2] = __
 
     return T
 
@@ -128,18 +132,19 @@ def factors_to_F(
         _e: torch.Tensor,
         _n: torch.Tensor,
         _c: torch.Tensor,
-        e_dim: int,
-        n_dim: int,
-        c_dim: int,
+        _at, _ar,
         rank: int,
         missing_rate: torch.Tensor,
         reduction: bool = True
 ) -> torch.Tensor:
-    t = logit_to_distribution(_t)
-    r = logit_to_distribution(_r)
+
     e = logit_to_distribution(_e)
     n = logit_to_distribution(_n)
     c = logit_to_distribution(_c)
+
+    e_dim = e.size(0)
+    n_dim = n.size(0)
+    c_dim = c.size(0)
 
     if reduction:
         F = torch.ones((3, 3, e_dim, n_dim, c_dim, 1, rank), device=_t.device)
@@ -147,16 +152,22 @@ def factors_to_F(
         F = torch.ones((3, 3, e_dim, n_dim, c_dim, missing_rate.size(-1), rank), device=_t.device)
         missing_rate = missing_rate.unsqueeze(-1)
 
-    for i in range(2):
-        for j in range(2):
-            F[i, j] *= t[i] * r[j] * missing_rate[0, 0]
+    bt = torch.exp(_t)
+    br = torch.exp(_r)
+    at = torch.exp(_at)
+    ar = torch.exp(_ar)
 
-        F[i, 2] *= t[i] * missing_rate[0, 1]
+    F *= torch.stack([
+        at * bt / (1+ at + bt + at * bt),
+        at      / (1+ at + bt + at * bt),
+        1       / (1+ at)
+    ]).reshape(3, 1, 1, 1, 1, 1, rank)
 
-    for j in range(2):
-        F[2, j] *= r[j] * missing_rate[1, 0]
-
-    F[2, 2] *= missing_rate[1, 1]
+    F *= torch.stack([
+        ar * br / (1+ ar + br + ar * br),
+        ar      / (1+ ar + br + ar * br),
+        1       / (1+ ar)
+    ]).reshape(1, 3, 1, 1, 1, 1, rank)
 
     for l in range(e_dim):
         F[:, :, l] *= e[l]
@@ -166,3 +177,50 @@ def factors_to_F(
         F[:, :, :, :, l] *= c[l]
 
     return F
+#
+# def factors_to_F(
+#         _t: torch.Tensor,
+#         _r: torch.Tensor,
+#         _e: torch.Tensor,
+#         _n: torch.Tensor,
+#         _c: torch.Tensor,
+#         rank: int,
+#         missing_rate: torch.Tensor,
+#         reduction: bool = True
+# ) -> torch.Tensor:
+#
+#     t = logit_to_distribution(_t)
+#     r = logit_to_distribution(_r)
+#     e = logit_to_distribution(_e)
+#     n = logit_to_distribution(_n)
+#     c = logit_to_distribution(_c)
+#
+#     e_dim = e.size(0)
+#     n_dim = n.size(0)
+#     c_dim = c.size(0)
+#
+#     if reduction:
+#         F = torch.ones((3, 3, e_dim, n_dim, c_dim, 1, rank), device=_t.device)
+#     else:
+#         F = torch.ones((3, 3, e_dim, n_dim, c_dim, missing_rate.size(-1), rank), device=_t.device)
+#         missing_rate = missing_rate.unsqueeze(-1)
+#
+#     for i in range(2):
+#         for j in range(2):
+#             F[i, j] *= t[i] * r[j] * missing_rate[0, 0]
+#
+#         F[i, 2] *= t[i] * missing_rate[0, 1]
+#
+#     for j in range(2):
+#         F[2, j] *= r[j] * missing_rate[1, 0]
+#
+#     F[2, 2] *= missing_rate[1, 1]
+#
+#     for l in range(e_dim):
+#         F[:, :, l] *= e[l]
+#     for l in range(n_dim):
+#         F[:, :, :, l] *= n[l]
+#     for l in range(c_dim):
+#         F[:, :, :, :, l] *= c[l]
+#
+#     return F

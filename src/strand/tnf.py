@@ -3,6 +3,7 @@ import math
 from torch import nn, optim
 from .functions import *
 from tqdm import tqdm
+from statistics import mean
 
 
 class TF_opt_model(nn.Module):
@@ -16,6 +17,8 @@ class TF_opt_model(nn.Module):
             _e: torch.Tensor,
             _n: torch.Tensor,
             _c: torch.Tensor,
+            _at: torch.Tensor,
+            _ar: torch.Tensor,
             e_dim: int,
             n_dim: int,
             c_dim: int
@@ -38,6 +41,9 @@ class TF_opt_model(nn.Module):
         self._n = nn.Parameter(_n)
         self._c = nn.Parameter(_c)
 
+        self._at = nn.Parameter(_at)
+        self._ar = nn.Parameter(_ar)
+
         self.e_dim = e_dim
         self.n_dim = n_dim
         self.c_dim = c_dim
@@ -53,8 +59,7 @@ class TF_opt_model(nn.Module):
             _r=self._r,
             e_dim=self.e_dim,
             n_dim=self.n_dim,
-            c_dim=self.c_dim,
-            rank=self.rank
+            c_dim=self.c_dim
         )
 
         F = factors_to_F(
@@ -63,15 +68,14 @@ class TF_opt_model(nn.Module):
             _e=self._e,
             _n=self._n,
             _c=self._c,
-            e_dim=self.e_dim,
-            n_dim=self.n_dim,
-            c_dim=self.c_dim,
+            _at=self._at,
+            _ar=self._ar,
             missing_rate=self._missing_rate,
             rank=self.rank,
             reduction=True
         )
 
-        return -(yphi * torch.log((T * F).clamp_(1e-20)).unsqueeze(-3)).mean(-1).sum()
+        return -(yphi * torch.log((T * F).clamp_(1e-20)).unsqueeze(-3)).mean()
 
     def fit(
             self,
@@ -85,7 +89,7 @@ class TF_opt_model(nn.Module):
         with tqdm(total=max_steps, desc=f'[{self.epoch}-th M-step] T & F optimization', leave=False) as pbar:
             cur_step = 0
             for _ in range(math.ceil(max_steps/len(yphi_loader))):
-                avg_loss = 0
+                avg_loss = []
                 for i, (yphi_batch, idx) in enumerate(yphi_loader):
                     self.optim.zero_grad()
                     loss = self(yphi=yphi_batch, idx=idx)
@@ -96,12 +100,12 @@ class TF_opt_model(nn.Module):
                     if cur_step >= max_steps:
                         break
 
-                    avg_loss += loss.item()
+                    avg_loss.append(loss.item())
                     pbar.update(1)
 
                     cur_step += 1
 
-                pbar.set_postfix({'loss': avg_loss})
+                pbar.set_postfix({'loss': mean(avg_loss)})
 
         self._T0.detach_()
         self._t.detach_()

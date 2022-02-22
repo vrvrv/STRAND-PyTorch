@@ -127,8 +127,6 @@ class LaplaceApproximation(nn.Module):
             if _ % 100 == 0:
                 pbar.set_postfix({'loss': avg_loss})
 
-        print("end")
-
         lamb = eta.detach()
         if return_Delta:
             Delta = getDelta(lamb, Yphi, Sigma_inv).to(lamb.device)

@@ -1,7 +1,7 @@
 import time
+import h5py
 import pickle
 import logging
-import torch.nn as nn
 import pytorch_lightning as pl
 
 from .utils import *
@@ -43,19 +43,33 @@ class STRAND(pl.LightningModule):
         super().__init__()
         self.save_hyperparameters()
 
-        if self.hparams.use_covariate:
-            with open(data_dir['X'], "rb") as f:
+        with h5py.File(data_dir, "r") as f:
+            if 'feature' in f.keys():
                 self.register_buffer(
-                    'X', torch.from_numpy(pickle.load(f)).float(), persistent=False
+                    'X', torch.tensor(f['feature'], dtype=torch.float), persistent=False
                 )
 
                 self.hparams['p'] = self.X.shape[0]
 
-        with open(data_dir['Y'], "rb") as f:
             self.register_buffer(
-                'Y', torch.from_numpy(pickle.load(f)).float(), persistent=False
+                'Y', torch.tensor(f['count_tensor'], dtype=torch.float), persistent=False
             )
             self.hparams['V'], self.hparams['D'] = self.Y.size(-2), self.Y.size(-1)
+
+        #
+        # if self.hparams.use_covariate:
+        #     with open(data_dir['X'], "rb") as f:
+        #         self.register_buffer(
+        #             'X', torch.from_numpy(pickle.load(f)).float(), persistent=False
+        #         )
+        #
+        #         self.hparams['p'] = self.X.shape[0]
+        #
+        # with open(data_dir['Y'], "rb") as f:
+        #     self.register_buffer(
+        #         'Y', torch.from_numpy(pickle.load(f)).float(), persistent=False
+        #     )
+        #     self.hparams['V'], self.hparams['D'] = self.Y.size(-2), self.Y.size(-1)
 
         init = Initializer(
             rank=self.hparams.rank,
@@ -77,7 +91,7 @@ class STRAND(pl.LightningModule):
 
         self.tnf = TF_opt_model(
             Y=self.Y, _T0=self._T0,
-            _t=self._t, _r=self._r, _e=self._e, _n=self._n, _c=self._c,
+            _t=self._t, _r=self._r, _e=self._e, _n=self._n, _c=self._c, _at=self._at, _ar=self._ar,
             e_dim=self.hparams.e_dim, n_dim=self.hparams.n_dim, c_dim=self.hparams.c_dim
         )
 
@@ -171,11 +185,9 @@ class STRAND(pl.LightningModule):
         self.e_step()
         self.m_step()
 
-        print("----------")
         s = time.time()
         self.log("negative_elbo", self.negative_elbo, on_epoch=True, prog_bar=True, logger=True)
-        print(time.time() - s)
-        print("-----------")
+
     def validataion_step(self, *args, **kwargs):
         Y = self.Y.reshape(-1, 96)
         non_zero_idx = Y.sum(dim=-1) != 0
@@ -243,8 +255,7 @@ class STRAND(pl.LightningModule):
             _r=self._r,
             e_dim=self.hparams.e_dim,
             n_dim=self.hparams.n_dim,
-            c_dim=self.hparams.c_dim,
-            rank=self.hparams.rank
+            c_dim=self.hparams.c_dim
         )
 
     @property
@@ -255,9 +266,8 @@ class STRAND(pl.LightningModule):
             _e=self._e,
             _n=self._n,
             _c=self._c,
-            e_dim=self.hparams.e_dim,
-            n_dim=self.hparams.n_dim,
-            c_dim=self.hparams.c_dim,
+            _at=self._at,
+            _ar=self._ar,
             missing_rate=self.missing_rate,
             rank=self.hparams.rank
         )
@@ -304,9 +314,8 @@ class STRAND(pl.LightningModule):
             _e=self._e,
             _n=self._n,
             _c=self._c,
-            e_dim=self.hparams.e_dim,
-            n_dim=self.hparams.n_dim,
-            c_dim=self.hparams.c_dim,
+            _at=self._at,
+            _ar=self._ar,
             missing_rate=m_d,
             rank=self.hparams.rank,
             reduction=True

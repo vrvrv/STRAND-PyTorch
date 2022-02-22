@@ -1,9 +1,7 @@
 _target_: src.strand.STRAND
 
 # Training
-data_dir:
-  X: ${work_dir}/data/${data_name}/feature.pkl
-  Y: ${work_dir}/data/${data_name}/snv.pkl
+data_dir: ${work_dir}/data/${data_name}.hdf5
 
 rank: 5
 t_dim: 2
