@@ -1,0 +1,39 @@
+# @package _global_
+
+defaults:
+  - override /model: default.yaml
+  - override /trainer: gpu.yaml
+  - override /datamodule: default.yaml
+  - override /logger: wandb
+
+hydra:
+  run:
+    dir: logs/runs/alz/without_covariate/rank_${model.rank}/${now:%Y-%m-%d_%H-%M-%S}
+
+data_name: alz_10
+
+model:
+  init_method:
+    T0: nmf
+    factors: nmf
+    Xi: sylvester
+    jointly: False
+  nmf_max_iter: 1000
+  tf_lr: 1e-2
+  tf_batch_size: 69
+  tf_max_steps: 500
+  regularization_coef: 1e-6
+  use_covariate: False
+  e_dim: 10
+trainer:
+  min_epochs: 10
+  max_epochs: 30
+
+logger:
+  project: "STRAND-Alzheimer"
+
+
+callbacks:
+  early_stopping:
+    patience: 1
+    min_delta: 5

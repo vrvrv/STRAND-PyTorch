@@ -1,0 +1,47 @@
+# @package _global_
+
+defaults:
+  - override /model: default.yaml
+  - override /trainer: gpu.yaml
+  - override /datamodule: default.yaml
+  - override /logger: wandb
+  - override /callbacks: default.yaml
+
+# simulation ID
+sid: 4
+data_name: simulation_${sid}
+data_dir: ${work_dir}/data/${data_name}
+
+true_rank: 5 # [5, 10, 20, 30]
+n: 1000
+m: 1000
+
+model:
+  rank: 5
+  init: nmf
+  e_iter: 10
+  laplace_approx_conf:
+    lr: 1e-2
+    max_iter: 1000
+    batch_size: 512
+    inv_method: spectral
+    eps: 1e-4
+  nmf_max_iter: 1000
+  tf_lr: 1e-3
+  tf_max_steps: 2000
+
+trainer:
+  min_epochs: 25
+  max_epochs: 50
+
+callbacks:
+  early_stopping:
+    min_delta: 0.1
+
+
+hydra:
+  run:
+    dir: logs/runs/${data_name}/with_covariate/rank_${model.rank}_true_rank_${true_rank}_n_${n}_m_${m}/${now:%Y-%m-%d_%H-%M-%S}
+
+logger:
+  project: "STRAND-Simulation"

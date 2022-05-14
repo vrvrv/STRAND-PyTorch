@@ -28,19 +28,3 @@ class emptyDataModule(LightningDataModule):
             num_workers=1,
             shuffle=True
         )
-
-    def validatiaon_dataloader(self):
-        return DataLoader(
-            dataset=self.train,
-            batch_size=1,
-            num_workers=1,
-            shuffle=False
-        )
-
-    def test_dataloader(self):
-        return DataLoader(
-            dataset=self.test,
-            batch_size=1,
-            num_workers=1,
-            shuffle=False
-        )

@@ -1,4 +1,5 @@
 import math
+import time
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -7,11 +8,9 @@ import numpy as np
 from tqdm import tqdm
 
 
-def inverse(matrix: torch.Tensor, method='none', eps=1e-2):
+def safe_inverse(matrix: torch.Tensor, method='none', eps=1e-3):
     if method == 'none':
         inv = torch.inverse(matrix)
-    elif method == 'det1':
-        inv = 1 / (torch.det(matrix) ** (1 / matrix.shape[0])) * matrix
     elif method == 'spectral':
         e, Q = torch.eig(matrix, eigenvectors=True)
         P = e[:, 0]
@@ -22,8 +21,6 @@ def inverse(matrix: torch.Tensor, method='none', eps=1e-2):
         P = P[mask]
 
         inv = (Q.matmul(torch.diag(1 / P)).matmul(Q.T))
-    elif method == 'add':
-        inv = torch.inverse(matrix + eps * torch.eye(matrix.size(0), device=matrix.device))
     else:
         raise NotImplementedError
 
@@ -41,7 +38,7 @@ def getDelta_d(lamb_d, Yn_d, SigmaInv):
 
     Delta_d = torch.inverse(neg_hessian)
 
-    return 0.01 * torch.diagonal(Delta_d) + 0.99 * Delta_d
+    return 0.001 * torch.diagonal(Delta_d) + 0.999 * Delta_d
 
 
 def getDelta(lamb, Yphi, Sigma_inv):
@@ -72,23 +69,19 @@ class LaplaceApproximation(nn.Module):
         loss1 = 0.5 * torch.diag((eta - mu).T.matmul(Sigma_inv).matmul(eta - mu))
 
         loss2 = - (Yphi * torch.log(
-            torch.softmax(
-                torch.cat([eta, torch.zeros(1, eta.size(1), device=eta.device)], dim=0),
-                dim=0
-            ).T + 1e-10
+            torch.softmax(torch.cat([eta, torch.zeros(1, eta.size(1), device=eta.device)], dim=0), dim=0).T
         )).sum(-1)
 
-        loss = loss1 + loss2
+        return loss1, loss2
 
-        return loss.mean()
+    def fit(self, eta_init, mu, Yphi, Sigma, lr, inv_method='none', eps=1e-2, return_Delta=False, **kwargs):
 
-    def fit(self, eta_init, mu, Yphi, Sigma, lr, inv_method='none', eps=1e-2, return_Delta=False):
-
-        Yphi.clamp_(min=0.001)
+        # Yphi.clamp_(min=1e-8)
         eta = nn.Parameter(eta_init)
 
         if not hasattr(self, 'optim'):
-            self.optim = optim.Adam([eta], lr=lr)
+            # self.optim = optim.Adamax([eta], lr=lr, weight_decay=0.0001)
+            self.optim = optim.RMSprop([eta], lr=lr)
         else:
             self.optim.param_groups[0]['params'] = [eta]
 
@@ -100,32 +93,34 @@ class LaplaceApproximation(nn.Module):
             desc='[E] Laplace Approximation',
             total=self.max_iter,
             leave=False,
-            miniters=self.max_iter // 10
+            miniters=self.max_iter // 100
         )
 
-        import time
-
-        Sigma_inv = inverse(Sigma, method=inv_method, eps=eps)
+        Sigma_inv = safe_inverse(Sigma, method=inv_method, eps=eps)
 
         for _ in pbar:
-            avg_loss = 0
-            np.random.shuffle(indices)
+            avg_loss1 = 0
+            avg_loss2 = 0
             for i in range(math.ceil(len(indices) / batch_size)):
                 self.optim.zero_grad()
                 start_idx = i * batch_size
                 end_idx = min((i + 1) * batch_size, len(indices))
 
-                random_idx = torch.from_numpy(indices[start_idx: end_idx]).long().to(mu.device)
+                train_idx = torch.from_numpy(indices[start_idx: end_idx]).long().to(mu.device)
 
-                loss = self(eta[:, random_idx], mu[:, random_idx], Yphi[random_idx], Sigma_inv)
+                loss1, loss2 = self(eta[:, train_idx], mu[:, train_idx], Yphi[train_idx], Sigma_inv)
+
+                loss = (loss1 + loss2).mean()
                 loss.backward()
 
                 self.optim.step()
 
-                avg_loss += loss.item() * (end_idx - start_idx + 1) / len(indices)
+                avg_loss1 += loss1.mean().item() * len(train_idx) / len(indices)
+                avg_loss2 += loss2.mean().item() * len(train_idx) / len(indices)
 
             if _ % 100 == 0:
-                pbar.set_postfix({'loss': avg_loss})
+                pbar.set_postfix({'loss1': avg_loss1, 'loss2': avg_loss2})
+                # print(eta[:, 1])
 
         lamb = eta.detach()
         if return_Delta:

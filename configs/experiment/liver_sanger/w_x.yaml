@@ -1,0 +1,33 @@
+# @package _global_
+
+defaults:
+  - override /model: default.yaml
+  - override /trainer: gpu.yaml
+  - override /datamodule: default.yaml
+  - override /logger: wandb
+
+hydra:
+  run:
+    dir: logs/runs/liver_sanger/with_covariate/rank_${model.rank}/${now:%Y-%m-%d_%H-%M-%S}
+
+data_name: liver_sanger
+
+model:
+  init_method:
+    T0: nmf
+    factors: nmf
+    Xi: sylvester
+    jointly: False
+  e_iter: 10
+  laplace_approx_conf:
+    lr: 0.01
+    max_iter: 2000
+    batch_size: 128
+  nmf_max_iter: 1000
+  tf_max_steps: 100
+
+trainer:
+  max_epochs: 30
+
+logger:
+  project: "STRAND-liver_sanger"

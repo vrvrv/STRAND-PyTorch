@@ -1,0 +1,39 @@
+# @package _global_
+
+defaults:
+  - override /model: default.yaml
+  - override /trainer: gpu.yaml
+  - override /datamodule: default.yaml
+  - override /logger: wandb
+  - override /callbacks: default.yaml
+
+hydra:
+  run:
+    dir: logs/runs/alz/with_covariate/rank_${model.rank}/${now:%Y-%m-%d_%H-%M-%S}
+
+data_name: alz
+
+model:
+  init: random
+  e_iter: 10
+  laplace_approx_conf:
+    lr: 1e-2
+    max_iter: 1000
+    batch_size: 69
+    inv_method: spectral
+    eps: 1e-4
+  nmf_max_iter: 1000
+  tf_lr: 1e-2
+  tf_max_steps: 2000
+  e_dim: 10
+trainer:
+  min_epochs: 10
+  max_epochs: 30
+
+logger:
+  project: "STRAND-Alzheimer"
+
+callbacks:
+  early_stopping:
+    patience: 1
+    min_delta: 4

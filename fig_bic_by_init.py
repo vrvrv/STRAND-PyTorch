@@ -6,13 +6,14 @@ import argparse
 
 from src.strand.functions import *
 from tqdm import tqdm
+from glob import glob
 from torch.distributions import Poisson
 
-r_range = range(6, 15)
+r_range = range(10, 11)
 
-def load_result(rank, Ysum, missing_rate, data):
+
+def load_result(rank, Ysum, missing_rate, pred):
     k = 0
-    pred = torch.load(f'checkpoints/{data}/random_init_partial/rank_{rank}_1.ckpt', map_location=torch.device('cpu'))['state_dict']
 
     _T0 = pred['_T0']
     _t = pred['_t']
@@ -90,27 +91,31 @@ def main(args):
         bic_dict = dict()
 
         for rank in r_range:
-            phat, chat, k = load_result(rank, Ysum=Ysum, missing_rate=missing_rate, data=args.data)
+            bic_dict[rank] = dict()
+            for i, ckpt in enumerate(glob(f'checkpoints/{args.data}/{args.init}/rank_{rank}' + '*_29.ckpt')):
+                pred = torch.load(ckpt, map_location=torch.device('cpu'))['state_dict']
 
-            ll = Poisson(chat.clamp(1e-8)).log_prob(y).sum()
+                phat, chat, k = load_result(rank, Ysum=Ysum, missing_rate=missing_rate, pred=pred)
 
-            # ll = (y * torch.log(phat + 1e-20)).sum()
+                ll = Poisson(chat.clamp(1e-8)).log_prob(y).sum()
 
-            # bic = - 2 * ll + k * math.log(n)
+                # ll = (y * torch.log(phat + 1e-20)).sum()
 
-            bic_dict[rank] = {
-                'll': float(ll), 'k': int(k), 'n': int(n)
-            }
+                # bic = - 2 * ll + k * math.log(n)
 
-            pbar.update(1)
+                bic_dict[rank][i] = {
+                    'll': float(ll), 'k': int(k), 'n': int(n)
+                }
 
-    with open(f"result/{args.data}/bic_partial_init.json", "w") as f:
+                pbar.update(1)
+
+    with open(f"result/{args.data}/bic_{args.init}.json", "w") as f:
         json.dump(bic_dict, f)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='draw figure b')
-    parser.add_argument('--sid', type=int, default=1)
-    parser.add_argument('--data', type=int, default='pcawg')
+    parser.add_argument('--data', type=str, default='pcawg')
+    parser.add_argument('--init', type=str, default='joint_init_false')
     args = parser.parse_args()
     main(args)

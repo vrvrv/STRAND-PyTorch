@@ -1,5 +1,6 @@
 import torch
 import numpy as np
+import h5py
 
 from scipy.stats import invgamma
 from torch.distributions import *
@@ -8,195 +9,146 @@ from tqdm.auto import tqdm
 from torch.nn import functional as F
 
 from src.strand.functions import *
+from scipy.stats import nbinom, poisson
+
+
+def isPD(A):
+    E = np.linalg.eigvalsh(A)
+    return np.all(E > 0)
 
 
 class SimulationGenerator:
     def __init__(
             self,
             rank: int,
-            dim: int,
-            e_dim: int,
-            n_dim: int,
-            c_dim: int,
+            context_dims: list,
             mutation: int,
+            Gamma,
             total_sample: int,
-            mutations_per_sample: int,
-            train_ratio: float = 0.8,
             random_theta_generation: bool = True,
-            feature_matrix_add_constant: bool = True,
-            bt: Optional[Union[list, torch.Tensor]] = None,
-            br: Optional[Union[list, torch.Tensor]] = None,
-            epi: Optional[Union[list, torch.Tensor]] = None,
-            nuc: Optional[Union[list, torch.Tensor]] = None,
-            clu: Optional[Union[list, torch.Tensor]] = None,
-            T0: Optional[Union[list, torch.Tensor]] = None,
-            m: Optional[Union[list, torch.Tensor]] = None,
-            X: Optional[Union[list, torch.Tensor]] = None,
-            Gamma: Optional[Union[list, torch.Tensor]] = None,
             nbinom: bool = False,
             disp_param: float = None,
             **kwargs
     ):
 
+        self.p = 2
         self.rank = rank
-        self.dim = dim
-        self.e_dim = e_dim
-        self.n_dim = n_dim
-        self.c_dim = c_dim
+        self.context_dims = context_dims
         self.mutation = mutation
         self._total_sample = total_sample
-        self.mutations_per_sample = mutations_per_sample
-        self._train_ratio = train_ratio
         self.random_theta_generation = random_theta_generation
-        self.feature_matrix_add_constant = feature_matrix_add_constant
-        self.nbinom=nbinom
-        self.disp_param=disp_param
+        self.nbinom = nbinom
+        self.disp_param = disp_param
 
-        if isinstance(bt, list):
-            bt = torch.Tensor(bt)
-        self._bt = bt
+        # with h5py.File("data/pcawg.hdf5", 'r') as f:
+        #     snv = np.array(f['count_tensor']).sum((0, 1, 2, 3, 4, -1))
+        #     snv = np.where(snv == 0, 1e-8, snv)
 
-        if isinstance(br, list):
-            br = torch.Tensor(br)
-        self._br = br
+        # m = torch.log(torch.from_numpy(snv / snv.sum()).float())
+        # m = m - m.mean()
+        m = torch.zeros(96)
 
-        if isinstance(epi, list):
-            epi = torch.Tensor(epi)
-        self._epi = epi
-        try:
-            assert len(epi) == e_dim
-        except AssertionError:
-            print("given epi shape doesn't match")
+        _ks = torch.log(torch.distributions.Dirichlet(torch.ones(96) * 0.5).sample((self.rank, )))
 
-        if isinstance(nuc, list):
-            nuc = torch.Tensor(nuc)
-        self._nuc = nuc
-        try:
-            assert len(nuc) == n_dim
-        except AssertionError:
-            print("given nuc shape doesn't match")
+        self.params = {
+            '_m': m,
+            '_ks': _ks,
+            '_kc': self._kc,
+            '_ki': self._ki,
+            '_kf': self._kf,
+            'X': self.X,
+            'Gamma': Gamma
+        }
 
-        if isinstance(clu, list):
-            clu = torch.Tensor(clu)
-        self._clu = clu
-        try:
-            assert len(clu) == c_dim
-        except AssertionError:
-            print("given clu shape doesn't match")
-
-        if isinstance(m, list):
-            m = torch.Tensor(m)
-        self._m = m
-
-        self._T0 = T0
-        self._X = X
-        self._Gamma = Gamma
+        self.params['theta'] = self.theta(
+            mu=self.params['Gamma'].matmul(self.params['X'])
+        )
 
     @property
-    def T0(self):
-        if self._T0 is not None:
-            return self._T0
-        else:
-            base_distribution = Dirichlet(0.3 * torch.ones((self.rank, self.mutation))).sample()
-            CL, CG, TL, TG = Dirichlet(500 * base_distribution).sample((4,))
-            T0 = torch.stack([CL.T, CG.T, TL.T, TG.T]).reshape(2, 2, self.mutation, self.rank)
+    def _kc(self):
+        _kc = dict()
+        for i, dim in enumerate(self.context_dims):
+            _kc_i = torch.from_numpy(np.random.laplace(0, 0.5, size=(dim, 96))).float()
+            # _kc_i = _kc_i * (torch.rand_like(_kc_i) > 0.8).float()
 
-        return T0
-
-    @property
-    def bt(self) -> torch.Tensor:
-        if self._bt is not None:
-            base_distribution = self._bt.repeat(self.rank, 1)
-        else:
-            base_distribution = Dirichlet(100 * torch.ones((self.rank, 2))).sample()
-
-        return Dirichlet(100 * base_distribution).sample().T
+            _kc[f'_kc_{i}'] = _kc_i
+        return _kc
 
     @property
-    def br(self) -> torch.Tensor:
-        if self._br is not None:
-            base_distribution = self.br.repeat(self.rank, 1)
-        else:
-            base_distribution = Dirichlet(100 * torch.ones((self.rank, 2))).sample()
+    def _kf(self):
+        _kf = dict()
+        for i, dim in enumerate(self.context_dims):
+            _kf[f'_kf_{i}'] = torch.from_numpy(np.random.laplace(0, 0.5, size=(dim, self.rank))).float()
 
-        return Dirichlet(100 * base_distribution).sample().T
-
-    @property
-    def epi(self) -> torch.Tensor:
-        if self._epi is not None:
-            base_distribution = self._epi.repeat(self.rank, 1)
-        else:
-            base_distribution = Dirichlet(100 * torch.ones((self.rank, self.e_dim))).sample()
-
-        return Dirichlet(30 * base_distribution).sample().T
+        return _kf
 
     @property
-    def nuc(self) -> torch.Tensor:
-        if self._nuc is not None:
-            base_distribution = self._nuc.repeat(self.rank, 1)
-        else:
-            base_distribution = Dirichlet(15 * torch.ones((self.rank, self.n_dim))).sample()
+    def _ki(self):
+        _ki = dict()
+        for i, dim in enumerate(self.context_dims):
+            _ki[f'_ki_{i}'] = torch.zeros_like(torch.from_numpy(np.random.laplace(0, 0.1, size=(dim, self.rank))).float())
+        return _ki
 
-        return Dirichlet(15 * base_distribution).sample().T
-
-    @property
-    def clu(self) -> torch.Tensor:
-        if self._clu is not None:
-            base_distribution = self._clu.repeat(self.rank, 1)
-        else:
-            base_distribution = Dirichlet(15 * torch.ones((self.rank, self.c_dim))).sample()
-
-        return Dirichlet(0.8 * base_distribution).sample().T
-
-    @property
-    def m(self):
-        if self._m is not None:
-            return self._m
-        else:
-            return Dirichlet(15 * torch.ones(4)).sample()
-
-    @property
-    def sigma(self):
-        return invgamma(15).rvs(self.rank - 1)
-
-    @property
-    def Gamma(self):
-        if self._Gamma is not None:
-            return self._Gamma
-        else:
-            sigma = self.sigma
-            Gamma = torch.empty((self.rank - 1, self.dim + 1))
-            for k in range(self.rank - 1):
-                Ip = torch.Tensor(np.eye(self.dim + 1))
-                gamma_k = MultivariateNormal(
-                    torch.zeros(self.dim + 1), sigma[k] * Ip
-                ).sample()
-                Gamma[k] = gamma_k
-
-            return Gamma
+    # @property
+    # def sigma(self):
+    #     return invgamma(2).rvs(self.rank - 1)
+    #
+    # @property
+    # def Gamma(self):
+    #     sigma = self.sigma
+    #     Gamma = torch.empty((self.rank - 1, self.p))
+    #     for k in range(self.rank - 1):
+    #         Ip = torch.Tensor(np.eye(self.p))
+    #         gamma_k = MultivariateNormal(torch.zeros(self.p), sigma[k] * Ip).sample()
+    #         Gamma[k] = gamma_k
+    #
+    #     return Gamma
 
     @property
     def X(self):
-        if self._X is not None:
-            X = self._X
-        else:
-            X = torch.randn((self.dim, self._total_sample))
-
-        if self.feature_matrix_add_constant:
-            X = torch.cat([X, torch.ones((1, X.size(dim=1)))], dim=0)
-        return X
+        x = np.random.uniform(size=self._total_sample)
+        X = np.stack([
+            x,
+            np.sin(5 * x),
+            np.cos(5 * x),
+            np.log(0.01+x)
+        ])
+        return torch.from_numpy(X).float()
 
     def theta(self, mu):
-        theta = torch.zeros(self.rank, self._total_sample)
 
         if self.random_theta_generation is True:
-            A = Normal(0, 0.2).sample((self.rank - 1, self.rank - 1))
-            Sigma = 2 * torch.eye(self.rank - 1) + A.matmul(A.T)
 
-            for d in range(self._total_sample):
-                eta_d = MultivariateNormal(mu[:, d], Sigma).sample()
-                eta_d = torch.cat([eta_d, torch.Tensor([0])])
-                theta[:, d] = F.softmax(eta_d, dim=0)
+            # A = Normal(0, 0.1).sample((self.rank - 1, self.rank - 1))
+            # Sigma = 0.2 * torch.eye(self.rank - 1) + (1 - torch.eye(self.rank - 1)) * A.matmul(A.T)
+            #
+            # it = 0
+            # while not isPD(Sigma):
+            #     A = Normal(0, 0.1).sample((self.rank - 1, self.rank - 1))
+            #     Sigma = 0.2 * torch.eye(self.rank - 1) + (1 - torch.eye(self.rank - 1)) * A.matmul(A.T)
+            #
+            #     it += 1
+            #
+            #     if it == 10:
+            #         raise NotImplementedError(f"{self.rank}")
+
+            Sigma = 0.5 * torch.eye(self.rank - 1)
+
+            # A = Normal(0, 0.2).sample((self.rank - 1, self.rank - 1))
+            # Sigma = torch.eye(self.rank - 1) + A.matmul(A.T)
+
+            # x = np.random.uniform(size=self._total_sample)
+            # mu = np.stack([
+            #     x,
+            #     np.sin(5 * x),
+            #     np.cos(5 * x),
+            #     np.log(0.01+x)
+            # ])
+            #
+            # mu = torch.from_numpy(mu).float()
+
+            eta = MultivariateNormal(mu.T, Sigma).sample().T
+            theta = logit_to_distribution(eta)
 
         else:
             tmp = torch.cat([mu, torch.zeros((1, mu.size(dim=1)))], dim=0)
@@ -204,94 +156,88 @@ class SimulationGenerator:
 
         return theta
 
-    @property
-    def factors(self):
-        return {
-            't': self.bt,
-            'r': self.br,
-            'e': self.epi,
-            'n': self.nuc,
-            'c': self.clu
-        }
-
     def _count_from_nb(self, n, mean):
-        from scipy.stats import nbinom
 
-        prob = n / (n + mean)
-        count = torch.Tensor(nbinom(n, prob).rvs(self._total_sample))
-
+        # prob = n / (n + mean)
+        # count = torch.Tensor(nbinom(n, prob).rvs(self._total_sample))
+        count = torch.Tensor(poisson.rvs(mean, size=self._total_sample))
         return count
 
-    def sample(self):
+    def sample(self, m):
         count = self._count_from_nb(
-            n=50,
-            mean=self.mutations_per_sample
+            n=self.disp_param,
+            mean=m
+        )
+        _kc = self.params['_kc']
+        _kf = self.params['_kf']
+        _ki = self.params['_ki']
+
+        tf = topic_word_dist(
+            _m=self.params['_m'],
+            _kt=self.params['_ks'],
+            _kc_t=_kc['_kc_0'],
+            _kc_r=_kc['_kc_1'],
+            _kc_e=_kc['_kc_2'],
+            _kc_n=_kc['_kc_3'],
+            _kc_c=_kc['_kc_4'],
+            _kf_t=_kf['_kf_0'],
+            _kf_r=_kf['_kf_1'],
+            _kf_e=_kf['_kf_2'],
+            _kf_n=_kf['_kf_3'],
+            _kf_c=_kf['_kf_4'],
+            _ki_t=_ki['_ki_0'],
+            _ki_r=_ki['_ki_1'],
+            _ki_e=_ki['_ki_2'],
+            _ki_n=_ki['_ki_3'],
+            _ki_c=_ki['_ki_4'],
         )
 
-        params = {
-            'T0': self.T0,
-            'factors': self.factors,
-            'm': self.m,
-            'Gamma': self.Gamma
-        }
-
-        params['theta'] = self.theta(
-            mu=params['Gamma'].matmul(self.X)
-        )
-
-        [cl, cg], [tl, tg] = params['T0']
-
-        _T0 = torch.stack([torch.stack([logit(cl), logit(cg)]),
-                           torch.stack([logit(tl), logit(tg)])])
-        T = stack(
-            _T0,
-            logit(params['factors']['t']),
-            logit(params['factors']['r']),
-            self.e_dim,
-            self.n_dim,
-            self.c_dim,
-            self.rank
-        )
-
-        F = factors_to_F(
-            logit(params['factors']['t']),
-            logit(params['factors']['r']),
-            logit(params['factors']['e']),
-            logit(params['factors']['n']),
-            logit(params['factors']['c']),
-            self.e_dim,
-            self.n_dim,
-            self.c_dim,
-            self.rank,
-            params['m'].reshape(2, 2)
-        )
-
-        tf = T * F
         p_lv_k = tf.flatten(end_dim=-2)
+        p_lv_d = p_lv_k.matmul(self.params['theta'])
 
-        Y = torch.zeros((3, 3, self.e_dim, self.n_dim, self.c_dim, self.mutation, self._total_sample))
+        Y = torch.zeros((*self.context_dims, self.mutation, self._total_sample))
 
         for d, Yd in tqdm(enumerate(count), total=len(count), leave=False,
-                          desc=f"rank : {self.rank}, n: {self._total_sample}, m: {self.mutations_per_sample}"):
+                          desc=f"rank : {self.rank}, n: {self._total_sample}, m: {m}"):
             if int(Yd) == 0:
                 Yd += 1
-            zd = Multinomial(total_count=int(Yd + 1), probs=params['theta'][:, d]).sample()
+            Y[..., d] += Multinomial(total_count=int(Yd), probs=p_lv_d[:, d]).sample().reshape(tf.shape[:-1])
 
-            for z, zcnt in enumerate(zd):
-                if zcnt > 0:
-                    if self.nbinom:
-                        probs = p_lv_k[:, z] * zcnt / (p_lv_k[:, z] * zcnt + self.disp_param)
+            # for z, zcnt in enumerate(zd):
+            #     if zcnt > 0:
+            #         if self.nbinom:
+            #             probs = p_lv_k[:, z] * zcnt / (p_lv_k[:, z] * zcnt + self.disp_param)
+            #
+            #             # Mean : p_lv_k[:, z] * zcnt
+            #             # Variance : Mean + Mean ** 2 / disp_param
+            #             v_cnt = NegativeBinomial(total_count=self.disp_param, probs=probs).sample()
+            #         else:
+            #             v_cnt = Multinomial(total_count=int(zcnt), probs=p_lv_k[:, z]).sample()
+            #         Y[..., d] += v_cnt.reshape(tf.shape[:-1])
 
-                        # Mean : p_lv_k[:, z] * zcnt
-                        # Variance : Mean + Mean ** 2 / disp_param
-                        v_cnt = NegativeBinomial(total_count=self.disp_param, probs=probs).sample()
-                    else:
-                        v_cnt = Multinomial(total_count=int(zcnt), probs=p_lv_k[:, z]).sample()
-                    Y[..., d] += v_cnt.reshape(tf.shape[:-1])
+        # theta = []
+        # for d, Yd in tqdm(enumerate(count), total=len(count), leave=False,
+        #                   desc=f"rank : {self.rank}, n: {self._total_sample}, m: {m}"):
+        #     zd = torch.multinomial(self.params['theta'][:, d], int(Yd), replacement=True)
+        #     theta_d = [int((zd == i).sum()) for i in range(self.rank)]
+        #
+        #     theta.append(theta_d)
+        #
+        # theta = torch.tensor(theta).T
+        #
+        # for k, Ck in enumerate(theta):
+        #     p_lvk = p_lv_k[:, [k]]
+        #     probs = p_lvk * Ck / (p_lvk * Ck + self.disp_param)
+        #
+        #     # Mean : p_lv_k[:, z] * zcnt
+        #     # Variance : Mean + Mean ** 2 / disp_param
+        #     v_cnt = NegativeBinomial(total_count=self.disp_param, probs=probs).sample()
+        #
+        #     Y += v_cnt.reshape(*tf.shape[:-1], -1)
 
         data = {
-            'count': Y.numpy(),
-            'feature': self.X.numpy(),
+            'count_tensor': Y.numpy(),
+            'feature': self.params['X'].numpy(),
         }
 
-        return data, params
+        return data, self.params, tf
