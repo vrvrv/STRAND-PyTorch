@@ -1,237 +1,113 @@
-import torch
-import numpy as np
-import torch.nn as nn
+from tqdm import tqdm
 from typing import Sequence
 from .functions import *
-from .joint_init import Joint_INIT
-from torch.distributions import Dirichlet
-from sklearn.decomposition import NMF, non_negative_factorization
-
-from scipy.linalg import solve_sylvester
-from torch.utils.data import Dataset, DataLoader
-
-if torch.cuda.is_available():
-    device = torch.device('cuda')
-else:
-    device = torch.device('cpu')
+from sklearn.decomposition import NMF
+from scipy.stats import poisson
 
 
 class Initializer(object):
     def __init__(self,
                  rank: int,
                  k_dims: Sequence[int],
-                 T0_init: str = 'nmf',
-                 factors_init: str = 'nmf',
-                 Xi_init: str = 'sylvester',
-                 init_jointly: bool = True,
-                 nmf_max_iter: int = 1000
+                 init: str = 'nmf',
+                 nmf_max_iter: int = 1000,
+                 **kwargs
                  ):
 
         self.rank = rank
         self.k_dims = k_dims
 
-        self.T0_init = T0_init
-        self.factors_init = factors_init
-        self.Xi_init = Xi_init
-        self.init_jointly = init_jointly
+        self._init = init
         self.nmf_max_iter = nmf_max_iter
 
         self.buffers = dict()
 
-    def fixed_nmf(self, X: np.array, W: np.array, H: np.array):
-        w, h, _ = non_negative_factorization(
-            X=X,
-            n_components=self.rank,
-            max_iter=self.nmf_max_iter,
-            W=W,
-            H=H,
-            update_H=False,
-            init='custom',
-            solver='mu',
-            beta_loss='kullback-leibler'
-        )
-        return w, h
-
-    def init(self, count_tensor: torch.Tensor, feature=None, factor_names=None):
+    def init(self, count_tensor: torch.Tensor, feature=None):
         count_tensor = count_tensor.cpu()
 
-        theta = self.init_T0(count_tensor, method=self.T0_init)
-
-        self.init_factors(count_tensor, theta, method=self.factors_init, factor_names=factor_names)
-
-        _theta = logit(theta)
+        lamb = self.init_T0(count_tensor, method=self._init)
 
         if feature is not None:
-            tmp = 0.1 * torch.rand(self.rank - 1, feature.size(0), 2)
-            self.buffers['zeta'] = torch.eye(feature.size(0)) + tmp.matmul(tmp.transpose(-1, -2))
+            self.buffers['zeta'] = torch.eye(feature.size(0)).repeat((self.rank-1, 1, 1))
             self.buffers['sigma'] = torch.ones(self.rank - 1)
-
-            tmp = 0.1 * torch.randn(self.rank - 1, self.rank - 1)
-            self.buffers['Sigma_mat'] = torch.eye(self.rank - 1) + tmp.matmul(tmp.T)
+            self.buffers['Sigma_mat'] = torch.eye(self.rank - 1)
 
             self.buffers['Delta'] = self.buffers['Sigma_mat'].repeat((feature.size(1), 1, 1))
-            self.buffers['lamb'] = _theta
-
-            if self.Xi_init == 'sylvester':
-                A = (self.buffers['Sigma_mat'] / (self.buffers['sigma'] ** 2)).numpy()
-                B = (feature.matmul(feature.T)).numpy()
-                Q = (self.buffers['lamb'].float().matmul(feature.T)).numpy()
-
-                Y = solve_sylvester(A, B, Q)
-
-                self.buffers['Xi'] = torch.from_numpy(Y).float()
-
-            elif self.Xi_init == 'random':
-                self.buffers['Xi'] = torch.normal(0, 1, size=(self.rank - 1, feature.size(0))).double()
+            self.buffers['lamb'] = lamb
+            self.buffers['Xi'] = torch.normal(0, 1, size=(self.rank - 1, feature.size(0))).float()
 
         else:
-            self.buffers['Lambda'] = logit_to_distribution(_theta)
+            self.buffers['Lambda'] = logit_to_distribution(lamb)
             self.buffers['H'] = torch.ones(self.rank)
-
-        self._init_jointly(count_tensor, feature=feature)
 
     def init_T0(self, count_tensor, method: str):
         V, D = count_tensor.size(-2), count_tensor.size(-1)
-        nmf = NMF(
-            n_components=self.rank,
-            solver='mu',
-            init='nndsvda',
-            beta_loss='kullback-leibler',
-            tol=1e-8,
-            max_iter=self.nmf_max_iter
-        )
 
-        T = nmf.fit_transform(count_tensor.sum(axis=(0, 1, 2, 3, 4)).clamp_(0.01))
-        E = nmf.components_
-
-        theta = E / np.where(E.sum(axis=0) < 1e-8, 1e-8, E.sum(axis=0))
+        nmf_trial = 15
 
         if method == 'nmf':
+            y = count_tensor.sum(axis=(0, 1, 2, 3, 4))
+            with tqdm(total=nmf_trial, desc=f'Initialization (NMF)', leave=True) as pbar:
+                for i in range(nmf_trial):
+                    nmf = NMF(
+                        n_components=self.rank,
+                        tol=1e-4,
+                        init='random',
+                        solver='mu',
+                        beta_loss='kullback-leibler',
+                        max_iter=self.nmf_max_iter
+                    )
 
-            # Fit T0_CL, T0_CG, T0_TL, T0_TG
-            Y_cl = count_tensor[0, 0].sum(axis=(0, 1, 2)).numpy().astype(np.float64)
-            Y_cg = count_tensor[0, 1].sum(axis=(0, 1, 2)).numpy().astype(np.float64)
-            Y_tl = count_tensor[1, 0].sum(axis=(0, 1, 2)).numpy().astype(np.float64)
-            Y_tg = count_tensor[1, 1].sum(axis=(0, 1, 2)).numpy().astype(np.float64)
+                    if i == 0:
+                        T = nmf.fit_transform(y)
+                        E = nmf.components_
+                        ll = poisson((T @ E).flatten()).logpmf(y.flatten()).sum()
 
-            cl, _ = self.fixed_nmf(X=Y_cl, W=T, H=E)
-            cg, _ = self.fixed_nmf(X=Y_cg, W=T, H=E)
-            tl, _ = self.fixed_nmf(X=Y_tl, W=T, H=E)
-            tg, _ = self.fixed_nmf(X=Y_tg, W=T, H=E)
+                    else:
+                        Ti = nmf.fit_transform(y)
+                        Ei = nmf.components_
+                        lli = poisson((Ti @ Ei).flatten()).logpmf(y.flatten()).sum()
+                        if lli > ll:
+                            T, E = Ti, Ei
+                            ll = lli
 
-            _cl = logit(torch.from_numpy(cl / cl.sum(axis=0)))
-            _cg = logit(torch.from_numpy(cg / cg.sum(axis=0)))
-            _tl = logit(torch.from_numpy(tl / tl.sum(axis=0)))
-            _tg = logit(torch.from_numpy(tg / tg.sum(axis=0)))
+                    pbar.update(1)
 
+                    pbar.set_postfix({'max_log_likelihood': ll})
+
+            lamb = logit(E / np.where(E.sum(axis=0) < 1e-8, 1e-8, E.sum(axis=0)))
+            _kt = torch.log(torch.from_numpy(T / T.sum(0)).float().clamp_(1e-10)).T
         elif method == 'random':
-
-            _cl = logit(
-                Dirichlet(torch.ones(self.rank, V)).sample().T
-            )
-            _cg = logit(
-                Dirichlet(torch.ones(self.rank, V)).sample().T
-            )
-            _tl = logit(
-                Dirichlet(torch.ones(self.rank, V)).sample().T
-            )
-            _tg = logit(
-                Dirichlet(torch.ones(self.rank, V)).sample().T
-            )
+            lamb = torch.randn((self.rank - 1, D))
+            _kt = torch.zeros(self.rank, V)
         else:
             raise NotImplementedError
 
-        self.buffers['_T0'] = torch.stack([_cl, _cg, _tl, _tg]).reshape(2, 2, V - 1, self.rank)
+        self.buffers['_kt'] = _kt
 
-        return theta
+        self.buffers['_kc_t'] = torch.zeros((count_tensor.size(0), V))
+        self.buffers['_kc_r'] = torch.zeros((count_tensor.size(1), V))
+        self.buffers['_kc_e'] = torch.zeros((count_tensor.size(2), V))
+        self.buffers['_kc_n'] = torch.zeros((count_tensor.size(3), V))
+        self.buffers['_kc_c'] = torch.zeros((count_tensor.size(4), V))
 
-    def init_factors(self, count_tensor: torch.Tensor, theta: np.ndarray, method: str, factor_names):
+        self.buffers['_ki_t'] = torch.zeros((count_tensor.size(0), V, self.rank))
+        self.buffers['_ki_r'] = torch.zeros((count_tensor.size(1), V, self.rank))
+        self.buffers['_ki_e'] = torch.zeros((count_tensor.size(2), V, self.rank))
+        self.buffers['_ki_n'] = torch.zeros((count_tensor.size(3), V, self.rank))
+        self.buffers['_ki_c'] = torch.zeros((count_tensor.size(4), V, self.rank))
 
-        for i, (dim, fn) in enumerate(zip(self.k_dims, factor_names)):
-            if method == 'nmf':
-                Y_f = count_tensor.transpose(i, -2).sum(dim=(0, 1, 2, 3, 4))[:dim]
-                Y_f = np.clip(Y_f, a_min=0.01, a_max=None)
+        self.buffers['_kf_t'] = torch.zeros((count_tensor.size(0), self.rank))
+        self.buffers['_kf_r'] = torch.zeros((count_tensor.size(1), self.rank))
+        self.buffers['_kf_e'] = torch.zeros((count_tensor.size(2), self.rank))
+        self.buffers['_kf_n'] = torch.zeros((count_tensor.size(3), self.rank))
+        self.buffers['_kf_c'] = torch.zeros((count_tensor.size(4), self.rank))
 
-                f, _, __ = non_negative_factorization(
-                    n_components=self.rank,
-                    X=Y_f / Y_f.sum(0),
-                    W=None,
-                    H=theta,
-                    update_H=False,
-                    solver='mu',
-                    beta_loss='kullback-leibler'
-                )
+        return lamb
 
-                _f = logit(torch.from_numpy(f / (f.sum(axis=0) + 0.0001)))
 
-            elif method == 'random':
-
-                _f = logit(
-                    Dirichlet(torch.ones((self.rank, dim))).sample().T
-                )
-
-            else:
-                raise NotImplementedError
-
-            self.buffers[f"_{fn}"] = _f
-
-    def _init_jointly(self, count_tensor: torch.Tensor, feature=None):
-
-        if feature is not None:
-            _theta = self.buffers['lamb']
-        else:
-            _theta = logit(self.buffers['H'])
-
-        joint_init = Joint_INIT(
-            count_tensor=count_tensor,
-            _theta=_theta,
-            **self.buffers
-        ).to(device)
-
-        joint_init.fit(batch_size=128, learning_rate=0.1, device=device, max_iter=100)
-
-        self.buffers['_T0'] = joint_init._T0.detach().cpu()
-
-        self.buffers['_t'] = joint_init._t.detach().cpu()
-        self.buffers['_r'] = joint_init._r.detach().cpu()
-        self.buffers['_e'] = joint_init._e.detach().cpu()
-        self.buffers['_n'] = joint_init._n.detach().cpu()
-        self.buffers['_c'] = joint_init._c.detach().cpu()
-        self.buffers['_at'] = joint_init._at.detach().cpu()
-        self.buffers['_ar'] = joint_init._ar.detach().cpu()
-
-        if feature is not None:
-            self.buffers['lamb'] = joint_init._theta.detach().cpu()
-        else:
-            self.buffers['H'] = logit_to_distribution(joint_init._theta.detach().cpu())
-
-def get_yphi_dataloader(Y, phi_d, batch_size):
-    def collate_fn(batch):
-        yphi = []
-        idx = []
-        for yphi_i, i in batch:
-            yphi.append(yphi_i)
-            idx.append(i)
-
-        phi = torch.stack(yphi, dim=-3)
-        idx = torch.tensor(idx, dtype=torch.long, device=phi.device)
-        return phi, idx
-
-    class yphi_iterator(Dataset):
-        def __init__(self):
-            super().__init__()
-            self.Y = Y
-
-        def __len__(self):
-            return self.Y.size(-1)
-
-        def __getitem__(self, item):
-            return self.Y[..., [item]] * phi_d(item), item
-
-    yphi = DataLoader(
-        yphi_iterator(),
-        batch_size=batch_size,
-        collate_fn=collate_fn
-    )
-
+def yphi_loader(Y, phi_d):
+    yphi = Y[..., [0]] * phi_d(0) / Y.size(-1)
+    for i in range(1, Y.size(-1)):
+        yphi += Y[..., [i]] * phi_d(i) / Y.size(-1)
     return yphi

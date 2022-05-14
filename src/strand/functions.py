@@ -33,29 +33,24 @@ def logit_to_distribution(tensor: torch.Tensor) -> torch.Tensor:
 
 
 def Phi(
-        T: torch.Tensor,
-        F: torch.Tensor,
-        lambda_or_Lambda: tuple
+        beta: torch.Tensor,
+        lambda_or_Lambda: tuple,
+        **kwargs
 ):
     name, lam = lambda_or_Lambda
 
     if name == 'lambda':
         lam = torch.cat([lam.T, torch.zeros((lam.size(1), 1), device=lam.device)], dim=1)
     elif name == 'Lambda':
-        lam = torch.log(lam.clamp_(1e-20)).T
+        lam = torch.log(lam.clamp_(1e-10)).T
 
-    phi = torch.log(T.clamp(1e-10)).cpu()
-
-    phi = phi.unsqueeze(-3) + lam.unsqueeze(-2).cpu()
-    phi = torch.log(F.clamp(1e-10)).unsqueeze(-2).cpu() + phi
-
+    phi = torch.log(beta).cpu().unsqueeze(-3) + lam.unsqueeze(-2).cpu()
     return torch.softmax(phi, dim=-1)
 
-
 def Phi_d(
-        T: torch.Tensor,
-        F: torch.Tensor,
-        lambda_or_Lambda: tuple
+        beta,
+        lambda_or_Lambda: tuple,
+        **kwargs
 ):
     name, lam_d = lambda_or_Lambda
 
@@ -64,163 +59,139 @@ def Phi_d(
     elif name == 'Lambda':
         lam_d = torch.log(lam_d.clamp_(min=1e-10)).T
 
-    phi_d = torch.log(T.clamp_(min=1e-10)) + torch.log(F.clamp_(min=1e-10)) + lam_d
+    phi_d = torch.log(beta.clamp(1e-10)) + lam_d
 
     return torch.softmax(phi_d, dim=-1)
 
 
+# def Yphi(
+#         Y: torch.Tensor,
+#         T: torch.Tensor,
+#         F: torch.Tensor,
+#         lambda_or_Lambda: tuple
+# ) -> torch.Tensor:
+#     device = Y.device
+#
+#     phi = Phi(T=T, F=F, lambda_or_Lambda=lambda_or_Lambda)
+#     Y = Y.transpose(-1, -2).cpu()
+#
+#     yphi = Y.unsqueeze(-1) * phi
+#
+#     return yphi.sum(axis=(0, 1, 2, 3, 4, -2)).to(device)
 def Yphi(
         Y: torch.Tensor,
-        T: torch.Tensor,
-        F: torch.Tensor,
+        beta: torch.Tensor,
         lambda_or_Lambda: tuple
 ) -> torch.Tensor:
     device = Y.device
 
-    phi = Phi(T=T, F=F, lambda_or_Lambda=lambda_or_Lambda)
-    Y = Y.transpose(-1, -2).cpu()
-
-    yphi = Y.unsqueeze(-1) * phi
+    phi = Phi(
+        beta=beta,
+        lambda_or_Lambda=lambda_or_Lambda
+    )
+    yphi = Y.transpose(-1, -2).cpu().unsqueeze(-1) * phi
 
     return yphi.sum(axis=(0, 1, 2, 3, 4, -2)).to(device)
 
 
-def stack(_T0: torch.Tensor, _t: torch.Tensor, _r: torch.Tensor, e_dim: int, n_dim: int, c_dim: int):
-    [[_cl, _cg], [_tl, _tg]] = _T0
+def topic_prev_dist(
+        lamb, _tc_t, _tc_r, _tc_e, _tc_n, _tc_c, **kwargs
+):
+    rank_1, D = lamb.size()
 
-    cl = logit_to_distribution(_cl)
-    cg = logit_to_distribution(_cg)
-    tl = logit_to_distribution(_tl)
-    tg = logit_to_distribution(_tg)
+    t_dim = _tc_t.shape[0]
+    r_dim = _tc_r.shape[0]
+    e_dim = _tc_e.shape[0]
+    n_dim = _tc_n.shape[0]
+    c_dim = _tc_c.shape[0]
 
-    t = logit_to_distribution(_t)
-    r = logit_to_distribution(_r)
+    lamb = lamb.T.reshape(1, 1, 1, 1, 1, D, rank_1)
 
-    V, K = _T0.size()[-2:]
-    # T = torch.empty((3, 3, e_dim, n_dim, c_dim, V + 1, K), device=_T0.device)
+    _tc_t = _tc_t.reshape(t_dim, 1, 1, 1, 1, D, 1)
+    _tc_r = _tc_r.reshape(1, r_dim, 1, 1, 1, D, 1)
+    _tc_e = _tc_e.reshape(1, 1, e_dim, 1, 1, D, 1)
+    _tc_n = _tc_n.reshape(1, 1, 1, n_dim, 1, D, 1)
+    _tc_c = _tc_c.reshape(1, 1, 1, 1, c_dim, D, 1)
 
-    t0 = t[0]
-    r0 = r[0]
+    theta = lamb + _tc_t + _tc_r + _tc_e + _tc_n + _tc_c
 
-    c_ = r0 * cl + (1 - r0) * cg
-    t_ = r0 * tl + (1 - r0) * tg
-    _l = t0 * cl + (1 - t0) * tl
-    _g = t0 * cg + (1 - t0) * tg
-
-    __ = t0 * r0 * cl + t0 * (1 - r0) * cg + (1 - t0) * r0 * tl + (1 - t0) * (1 - r0) * tg
-
-    T = torch.stack([
-        cl, cg, c_, tl, tg, t_, _l, _g, __
-    ]).reshape(3, 3, 1, 1, 1, V+1, K).to(_T0.device).float()
-
-    # T[0, 0] = cl
-    # T[1, 0] = tl
-    # T[2, 0] = _l
-    # T[0, 1] = cg
-    # T[1, 1] = tg
-    # T[2, 1] = _g
-    # T[0, 2] = c_
-    # T[1, 2] = t_
-    # T[2, 2] = __
-
-    return T
+    theta = torch.exp(
+        torch.cat([theta, torch.zeros((t_dim, r_dim, e_dim, n_dim, c_dim, D, 1)).to(_tc_t.device)], dim=-1)
+    )
+    return theta / theta.sum(-1, keepdims=True)
 
 
-def factors_to_F(
-        _t: torch.Tensor,
-        _r: torch.Tensor,
-        _e: torch.Tensor,
-        _n: torch.Tensor,
-        _c: torch.Tensor,
-        _at, _ar,
-        rank: int,
-        missing_rate: torch.Tensor,
-        reduction: bool = True
-) -> torch.Tensor:
+def topic_word_dist(
+        _kt,
+        _ki_t,
+        _ki_r,
+        _ki_e,
+        _ki_n,
+        _ki_c,
+        _kc_t,
+        _kc_r,
+        _kc_e,
+        _kc_n,
+        _kc_c,
+        _kf_t,
+        _kf_r,
+        _kf_e,
+        _kf_n,
+        _kf_c,
+        _wm=None,
+        **kwargs):
+    """
 
-    e = logit_to_distribution(_e)
-    n = logit_to_distribution(_n)
-    c = logit_to_distribution(_c)
+    :param _m: V
+    :param _kt: K x V
+    :param _kc_{m}: L_m x V
+    :param _ki_{m}: L_m x V x K
+    :param _k: L_m x K
+    :return: Beta : L_t x ... x L_c x V x K
+    """
+    rank, V = _kt.size()
 
-    e_dim = e.size(0)
-    n_dim = n.size(0)
-    c_dim = c.size(0)
+    t_dim = _ki_t.shape[0]
+    r_dim = _ki_r.shape[0]
+    e_dim = _ki_e.shape[0]
+    n_dim = _ki_n.shape[0]
+    c_dim = _ki_c.shape[0]
 
-    if reduction:
-        F = torch.ones((3, 3, e_dim, n_dim, c_dim, 1, rank), device=_t.device)
-    else:
-        F = torch.ones((3, 3, e_dim, n_dim, c_dim, missing_rate.size(-1), rank), device=_t.device)
-        missing_rate = missing_rate.unsqueeze(-1)
+    wm = 1
 
-    bt = torch.exp(_t)
-    br = torch.exp(_r)
-    at = torch.exp(_at)
-    ar = torch.exp(_ar)
+    # if _wm is None:
+    #     wm = 1
+    # else:
+    #     wm = torch.exp(_wm) / (1+torch.exp(_wm))
 
-    F *= torch.stack([
-        at * bt / (1+ at + bt + at * bt),
-        at      / (1+ at + bt + at * bt),
-        1       / (1+ at)
-    ]).reshape(3, 1, 1, 1, 1, 1, rank)
+    # _m = _m.reshape(1, 1, 1, 1, 1, V, 1) * wm
+    # _kt = _kt.reshape(1, 1, 1, 1, 1, V, rank)
 
-    F *= torch.stack([
-        ar * br / (1+ ar + br + ar * br),
-        ar      / (1+ ar + br + ar * br),
-        1       / (1+ ar)
-    ]).reshape(1, 3, 1, 1, 1, 1, rank)
+    # _mkt = (_m + _kt).T.reshape(1, 1, 1, 1, 1, V, rank)
+    _kt = _kt.T.reshape(1, 1, 1, 1, 1, V, rank)
 
-    for l in range(e_dim):
-        F[:, :, l] *= e[l]
-    for l in range(n_dim):
-        F[:, :, :, l] *= n[l]
-    for l in range(c_dim):
-        F[:, :, :, :, l] *= c[l]
+    _kf_t = _kf_t.reshape(t_dim, 1, 1, 1, 1, 1, rank)
+    _kf_r = _kf_r.reshape(1, r_dim, 1, 1, 1, 1, rank)
+    _kf_e = _kf_e.reshape(1, 1, e_dim, 1, 1, 1, rank)
+    _kf_n = _kf_n.reshape(1, 1, 1, n_dim, 1, 1, rank)
+    _kf_c = _kf_c.reshape(1, 1, 1, 1, c_dim, 1, rank)
 
-    return F
-#
-# def factors_to_F(
-#         _t: torch.Tensor,
-#         _r: torch.Tensor,
-#         _e: torch.Tensor,
-#         _n: torch.Tensor,
-#         _c: torch.Tensor,
-#         rank: int,
-#         missing_rate: torch.Tensor,
-#         reduction: bool = True
-# ) -> torch.Tensor:
-#
-#     t = logit_to_distribution(_t)
-#     r = logit_to_distribution(_r)
-#     e = logit_to_distribution(_e)
-#     n = logit_to_distribution(_n)
-#     c = logit_to_distribution(_c)
-#
-#     e_dim = e.size(0)
-#     n_dim = n.size(0)
-#     c_dim = c.size(0)
-#
-#     if reduction:
-#         F = torch.ones((3, 3, e_dim, n_dim, c_dim, 1, rank), device=_t.device)
-#     else:
-#         F = torch.ones((3, 3, e_dim, n_dim, c_dim, missing_rate.size(-1), rank), device=_t.device)
-#         missing_rate = missing_rate.unsqueeze(-1)
-#
-#     for i in range(2):
-#         for j in range(2):
-#             F[i, j] *= t[i] * r[j] * missing_rate[0, 0]
-#
-#         F[i, 2] *= t[i] * missing_rate[0, 1]
-#
-#     for j in range(2):
-#         F[2, j] *= r[j] * missing_rate[1, 0]
-#
-#     F[2, 2] *= missing_rate[1, 1]
-#
-#     for l in range(e_dim):
-#         F[:, :, l] *= e[l]
-#     for l in range(n_dim):
-#         F[:, :, :, l] *= n[l]
-#     for l in range(c_dim):
-#         F[:, :, :, :, l] *= c[l]
-#
-#     return F
+    _kc_t = _kc_t.reshape(t_dim, 1, 1, 1, 1, V, 1)
+    _kc_r = _kc_r.reshape(1, r_dim, 1, 1, 1, V, 1)
+    _kc_e = _kc_e.reshape(1, 1, e_dim, 1, 1, V, 1)
+    _kc_n = _kc_n.reshape(1, 1, 1, n_dim, 1, V, 1)
+    _kc_c = _kc_c.reshape(1, 1, 1, 1, c_dim, V, 1)
+
+    # _ki_t = _ki_t.reshape(t_dim, 1, 1, 1, 1, V, rank)
+    # _ki_r = _ki_r.reshape(1, r_dim, 1, 1, 1, V, rank)
+    # _ki_e = _ki_e.reshape(1, 1, e_dim, 1, 1, V, rank)
+    # _ki_n = _ki_n.reshape(1, 1, 1, n_dim, 1, V, rank)
+    # _ki_c = _ki_c.reshape(1, 1, 1, 1, c_dim, V, rank)
+
+    beta = _kt \
+           + _kf_t + _kf_r + _kf_e + _kf_n + _kf_c \
+           + _kc_t + _kc_r + _kc_e + _kc_n + _kc_c
+           # + _ki_t + _ki_r + _ki_e + _ki_n + _ki_c \
+
+    Beta = torch.exp(beta)
+    return Beta / Beta.sum((0, 1, 2, 3, 4, -2), keepdims=True)

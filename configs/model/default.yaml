@@ -13,10 +13,7 @@ c_dim: 2
 use_covariate: True
 
 # Initialization
-init_method:
-  T0: nmf
-  factors: nmf
-  Xi: sylvester
+init: nmf
 nmf_max_iter: 1000
 
 # E step
@@ -27,10 +24,9 @@ laplace_approx_conf:
   batch_size: 512
   inv_method: spectral
   eps: 1e-2
+solve_sylvester: True
 
 # M step
 tf_lr: 0.03
-tf_batch_size: 64
 tf_max_steps: 1 # 500
-
-bias_correction: False
+tf_lr_decay: 1.0
